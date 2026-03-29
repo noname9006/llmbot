@@ -1,0 +1,19 @@
+{
+  "name": "discord-llm-bot",
+  "version": "1.0.0",
+  "description": "Discord bot powered by LM Studio via FRP tunnel",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.15.3",
+    "dotenv": "^16.4.5",
+    "openai": "^4.52.7"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
