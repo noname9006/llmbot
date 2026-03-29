@@ -8,6 +8,8 @@ const client = new OpenAI({
   apiKey: "lm-studio",
 });
 
+logger.info(`LLM mode: ${config.llm.thinkingMode ? "thinking" : "instruct"}`);
+
 /**
  * Calls the LLM with the given messages and streams the response.
  *
@@ -20,12 +22,29 @@ export async function streamCompletion(messages, onChunk) {
     `Sending ${messages.length} messages to LLM (model: ${config.llm.model})`
   );
 
+  // Prepend /think or /no_think to a copy of the first user message
+  const prefix = config.llm.thinkingMode ? "/think\n" : "/no_think\n";
+  const firstUserIdx = messages.findIndex((m) => m.role === "user");
+  const modifiedMessages =
+    firstUserIdx >= 0
+      ? messages.map((msg, idx) =>
+          idx === firstUserIdx
+            ? { ...msg, content: `${prefix}${msg.content}` }
+            : msg
+        )
+      : messages;
+
   const stream = await client.chat.completions.create({
     model: config.llm.model,
-    messages,
+    messages: modifiedMessages,
     stream: true,
     max_tokens: config.llm.maxTokens > 0 ? config.llm.maxTokens : undefined,
     temperature: config.llm.temperature,
+    top_p: config.llm.topP,
+    top_k: config.llm.topK,
+    min_p: config.llm.minP,
+    presence_penalty: config.llm.presencePenalty,
+    repetition_penalty: config.llm.repetitionPenalty,
   });
 
   let fullText = "";

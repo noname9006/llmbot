@@ -5,6 +5,7 @@ import { createBot } from "./bot.js";
 logger.info("Starting discord-llm-bot...");
 logger.info(`LLM endpoint: ${config.llm.baseUrl}`);
 logger.info(`Model: ${config.llm.model}`);
+logger.info(`Mode: ${config.llm.thinkingMode ? "thinking" : "instruct"}`);
 
 const client = createBot();
 
