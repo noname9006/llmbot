@@ -63,35 +63,20 @@ export async function onMessage(message, client) {
   historyService.pushUser(message.author.id, userText);
   const messages = historyService.getMessages(message.author.id);
 
-  // ── Send placeholder & stream into it ──────────────────────────────────────
-  let replyMessage;
-  let accumulated = "";
-  let lastEditLength = 0;
-
+  // ── Wait for full response, then send ──────────────────────────────────────
   try {
-    // Send the initial placeholder so we have a message to edit
-    replyMessage = await message.reply("▍"); // blinking cursor effect
+    const fullResponse = await streamCompletion(messages);
 
-    const fullResponse = await streamCompletion(messages, async (chunk) => {
-      accumulated += chunk;
-
-      // Only edit Discord message every ~80 chars to avoid rate limits
-      const shouldEdit =
-        accumulated.length - lastEditLength >= 80 ||
-        accumulated.endsWith("\n");
-
-      if (shouldEdit) {
-        lastEditLength = accumulated.length;
-        const display = truncate(accumulated) + " ▍";
-        await replyMessage.edit(display).catch((err) => {
-          logger.warn("Failed to edit message during stream:", err.message);
-        });
-      }
-    });
-
-    // Final edit: full content, no cursor
-    const finalDisplay = truncate(fullResponse);
-    await replyMessage.edit(finalDisplay);
+    // Split into Discord-sized chunks and send
+    const chunks = splitMessage(fullResponse);
+    if (chunks.length === 0) {
+      await message.reply("*(no response)*");
+    } else {
+      await message.reply(chunks[0]);
+    }
+    for (let i = 1; i < chunks.length; i++) {
+      await message.channel.send(chunks[i]);
+    }
 
     // Persist the assistant's full reply to history
     historyService.pushAssistant(message.author.id, fullResponse);
@@ -102,11 +87,7 @@ export async function onMessage(message, client) {
       "⚠️ Something went wrong while contacting the LLM backend. " +
       "Make sure LM Studio is running and the FRP tunnel is active.";
 
-    if (replyMessage) {
-      await replyMessage.edit(errorText).catch(() => {});
-    } else {
-      await message.reply(errorText).catch(() => {});
-    }
+    await message.reply(errorText).catch(() => {});
 
     // Roll back only the user message we pushed — leave prior history intact
     historyService.popLastUser(message.author.id);
@@ -118,14 +99,39 @@ export async function onMessage(message, client) {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
- * Truncates text to Discord's limit, appending a notice if cut.
+ * Splits text into chunks of at most `limit` characters.
+ * Prefers splitting on newline boundaries, then word boundaries.
  * @param {string} text
- * @returns {string}
+ * @param {number} [limit]
+ * @returns {string[]}
  */
-function truncate(text) {
-  if (text.length <= STREAM_CHUNK_LIMIT) return text;
-  return (
-    text.slice(0, STREAM_CHUNK_LIMIT - 40) +
-    "\n…*(response truncated — ask me to continue)*"
-  );
+function splitMessage(text, limit = STREAM_CHUNK_LIMIT) {
+  if (text.length <= limit) return [text];
+
+  const chunks = [];
+  let remaining = text;
+
+  while (remaining.length > limit) {
+    // Try to split on a newline within the limit
+    let splitAt = remaining.slice(0, limit).lastIndexOf("\n");
+
+    // Fall back to a word boundary (space) within the limit
+    if (splitAt <= 0) {
+      splitAt = remaining.slice(0, limit).lastIndexOf(" ");
+    }
+
+    // Last resort: hard cut at the limit
+    if (splitAt <= 0) {
+      splitAt = limit;
+    }
+
+    chunks.push(remaining.slice(0, splitAt).trimEnd());
+    remaining = remaining.slice(splitAt).trimStart();
+  }
+
+  if (remaining.length > 0) {
+    chunks.push(remaining);
+  }
+
+  return chunks;
 }
