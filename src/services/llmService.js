@@ -57,6 +57,9 @@ export async function streamCompletion(messages, onChunk) {
     }
   }
 
+  // Strip reasoning/thinking tokens that some models emit
+  fullText = fullText.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+
   logger.debug(`LLM response complete. Total chars: ${fullText.length}`);
   return fullText;
 }
