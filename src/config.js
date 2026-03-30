@@ -37,7 +37,7 @@ export const config = {
     model: optional("LLM_MODEL", "qwen3.5-prism-dynamic-quant"),
     systemPrompt: loadSystemPrompt(),
     thinkingMode: optional("LLM_THINKING_MODE", "false") === "true",
-    temperature: parseFloat(optional("LLM_TEMPERATURE", "1.0")),
+    temperature: parseFloat(optional("LLM_TEMPERATURE", "0.7")),
     topP: parseFloat(optional("LLM_TOP_P", "0.95")),
     topK: parseInt(optional("LLM_TOP_K", "20"), 10),
     minP: parseFloat(optional("LLM_MIN_P", "0.0")),
