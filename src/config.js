@@ -34,16 +34,17 @@ export const config = {
   },
   llm: {
     baseUrl: optional("LLM_BASE_URL", "http://127.0.0.1:7860/v1"),
-    model: optional("LLM_MODEL", "qwen3.5-prism-dynamic-quant"),
+    model: optional("LLM_MODEL", "Hermes-3-Llama-3.1-8B-Lorablated.Q4_K_M"),
     systemPrompt: loadSystemPrompt(),
+    // thinkingMode is only relevant for Qwen-like models; not used by Hermes 3
     thinkingMode: optional("LLM_THINKING_MODE", "false") === "true",
-    temperature: parseFloat(optional("LLM_TEMPERATURE", "0.7")),
+    temperature: parseFloat(optional("LLM_TEMPERATURE", "0.8")),
     topP: parseFloat(optional("LLM_TOP_P", "0.95")),
-    topK: parseInt(optional("LLM_TOP_K", "20"), 10),
+    topK: parseInt(optional("LLM_TOP_K", "40"), 10),
     minP: parseFloat(optional("LLM_MIN_P", "0.0")),
     presencePenalty: parseFloat(optional("LLM_PRESENCE_PENALTY", "1.5")),
-    repetitionPenalty: parseFloat(optional("LLM_REPETITION_PENALTY", "1.0")),
-    maxTokens: parseInt(optional("LLM_MAX_TOKENS", "1024"), 10),
+    repetitionPenalty: parseFloat(optional("LLM_REPETITION_PENALTY", "1.1")),
+    maxTokens: parseInt(optional("LLM_MAX_TOKENS", "2048"), 10),
   },
   history: {
     maxPairs: parseInt(optional("HISTORY_MAX_PAIRS", "10"), 10),

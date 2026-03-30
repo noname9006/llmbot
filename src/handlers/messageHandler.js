@@ -85,7 +85,7 @@ export async function onMessage(message, client) {
 
     const errorText =
       "⚠️ Something went wrong while contacting the LLM backend. " +
-      "Make sure LM Studio is running and the FRP tunnel is active.";
+      "Make sure the LLM backend is running and accessible.";
 
     await message.reply(errorText).catch(() => {});
 
