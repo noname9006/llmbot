@@ -63,9 +63,15 @@ export async function onMessage(message, client) {
   historyService.pushUser(message.author.id, userText);
   const messages = historyService.getMessages(message.author.id);
 
+  // ── Inject ephemeral capitalization reminder ────────────────────────────────
+  const capReminder = buildCapReminder(userText);
+  const messagesWithReminder = capReminder
+    ? [...messages, { role: "system", content: capReminder }]
+    : messages;
+
   // ── Wait for full response, then send ──────────────────────────────────────
   try {
-    const fullResponse = await streamCompletion(messages);
+    const fullResponse = await streamCompletion(messagesWithReminder);
 
     // Split into Discord-sized chunks and send
     const chunks = splitMessage(fullResponse);
@@ -97,6 +103,34 @@ export async function onMessage(message, client) {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Detects the capitalization style of the first word of `text` and returns
+ * an ephemeral system-level reminder string, or `null` if the text is empty.
+ * @param {string} text
+ * @returns {string|null}
+ */
+function buildCapReminder(text) {
+  const firstWord = text.trim().split(/\s+/)[0];
+  if (!firstWord) return null;
+
+  // Extract only the letters from the first word to determine its casing
+  const letters = firstWord.replace(/[^A-Za-z]/g, "");
+  if (!letters) {
+    // First word has no letters at all — fall back to lowercase reminder
+    return "[CAPITALIZATION REMINDER: User's message is lowercase. Your response must be entirely lowercase.]";
+  }
+
+  if (letters.length > 1 && letters === letters.toUpperCase()) {
+    return "[CAPITALIZATION REMINDER: User's message is ALL CAPS. Your ENTIRE response must be ALL CAPS.]";
+  }
+
+  if (letters[0] === letters[0].toUpperCase()) {
+    return "[CAPITALIZATION REMINDER: User's message starts with uppercase. Your response MUST start with an uppercase letter and use normal sentence capitalization.]";
+  }
+
+  return "[CAPITALIZATION REMINDER: User's message is lowercase. Your response must be entirely lowercase.]";
+}
 
 /**
  * Splits text into chunks of at most `limit` characters.
