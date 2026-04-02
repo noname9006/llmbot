@@ -22,21 +22,9 @@ export async function streamCompletion(messages, onChunk) {
     `Sending ${messages.length} messages to LLM (model: ${config.llm.model})`
   );
 
-  // Prepend /think or /no_think to a copy of the first user message
-  const prefix = config.llm.thinkingMode ? "/think\n" : "/no_think\n";
-  const firstUserIdx = messages.findIndex((m) => m.role === "user");
-  const modifiedMessages =
-    firstUserIdx >= 0
-      ? messages.map((msg, idx) =>
-          idx === firstUserIdx
-            ? { ...msg, content: `${prefix}${msg.content}` }
-            : msg
-        )
-      : messages;
-
   const stream = await client.chat.completions.create({
     model: config.llm.model,
-    messages: modifiedMessages,
+    messages,
     stream: true,
     max_tokens: config.llm.maxTokens > 0 ? config.llm.maxTokens : undefined,
     temperature: config.llm.temperature,
