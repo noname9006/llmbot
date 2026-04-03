@@ -32,19 +32,31 @@ export const config = {
       .map((s) => s.trim())
       .filter(Boolean),
   },
-  llm: {
-    baseUrl: optional("LLM_BASE_URL", "http://127.0.0.1:7860/v1"),
-    model: optional("LLM_MODEL", "Hermes-3-Llama-3.1-8B-Lorablated.Q4_K_M"),
-    systemPrompt: loadSystemPrompt(),
-    // thinkingMode is only relevant for Qwen-like models; not used by Hermes 3
-    thinkingMode: optional("LLM_THINKING_MODE", "false") === "true",
+  ollama: {
+    vpsBaseUrl: optional("VPS_OLLAMA_BASE_URL", "http://localhost:11434"),
+    localBaseUrl: required("LOCAL_OLLAMA_BASE_URL"),
+    vpsModel: optional("VPS_MODEL", "phi4-mini"),
+    localModelCommon: required("LOCAL_MODEL_COMMON"),
+    localModelHeavy: required("LOCAL_MODEL_HEAVY"),
     temperature: parseFloat(optional("LLM_TEMPERATURE", "0.8")),
     topP: parseFloat(optional("LLM_TOP_P", "0.95")),
     topK: parseInt(optional("LLM_TOP_K", "40"), 10),
     minP: parseFloat(optional("LLM_MIN_P", "0.0")),
-    presencePenalty: parseFloat(optional("LLM_PRESENCE_PENALTY", "1.5")),
-    repetitionPenalty: parseFloat(optional("LLM_REPETITION_PENALTY", "1.1")),
+    repeatPenalty: parseFloat(optional("LLM_REPETITION_PENALTY", "1.1")),
     maxTokens: parseInt(optional("LLM_MAX_TOKENS", "2048"), 10),
+  },
+  llm: {
+    systemPrompt: loadSystemPrompt(),
+  },
+  availability: {
+    pollIntervalMs: parseInt(
+      optional("LOCAL_HEALTH_POLL_INTERVAL_MS", "30000"),
+      10
+    ),
+  },
+  search: {
+    searxngBaseUrl: optional("SEARXNG_BASE_URL", ""),
+    resultCount: parseInt(optional("SEARCH_RESULT_COUNT", "5"), 10),
   },
   history: {
     maxPairs: parseInt(optional("HISTORY_MAX_PAIRS", "10"), 10),

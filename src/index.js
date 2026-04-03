@@ -3,9 +3,10 @@ import { logger } from "./logger.js";
 import { createBot } from "./bot.js";
 
 logger.info("Starting discord-llm-bot...");
-logger.info(`LLM endpoint: ${config.llm.baseUrl}`);
-logger.info(`Model: ${config.llm.model}`);
-logger.info(`Mode: ${config.llm.thinkingMode ? "thinking" : "instruct"}`);
+logger.info(`VPS Ollama: ${config.ollama.vpsBaseUrl} (model: ${config.ollama.vpsModel})`);
+logger.info(`Local Ollama: ${config.ollama.localBaseUrl}`);
+logger.info(`  Common model: ${config.ollama.localModelCommon}`);
+logger.info(`  Heavy model:  ${config.ollama.localModelHeavy}`);
 
 const client = createBot();
 

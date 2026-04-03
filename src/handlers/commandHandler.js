@@ -1,5 +1,7 @@
 import { historyService } from "../services/historyService.js";
-import { checkHealth } from "../services/llmService.js";
+import { isLocalAvailable } from "../services/availabilityService.js";
+import { getActiveLocalModel } from "../services/modelManager.js";
+import { handleForcedSearch } from "./messageHandler.js";
 import { logger } from "../logger.js";
 
 /**
@@ -12,11 +14,14 @@ export function isCommand(content) {
 
 /**
  * Dispatches a command message and returns a reply string, or null if unknown.
+ * For the !search command, sends its own replies and returns null.
  * @param {import("discord.js").Message} message
+ * @param {import("discord.js").Client} _client
  * @returns {Promise<string|null>}
  */
-export async function handleCommand(message) {
-  const [cmd] = message.content.trim().slice(1).split(/\s+/);
+export async function handleCommand(message, _client) {
+  const parts = message.content.trim().slice(1).split(/\s+/);
+  const cmd = parts[0];
 
   switch (cmd.toLowerCase()) {
     case "reset": {
@@ -26,20 +31,39 @@ export async function handleCommand(message) {
     }
 
     case "status": {
-      const healthy = await checkHealth();
+      const localOnline = isLocalAvailable();
+      const activeModel = getActiveLocalModel();
       const historyCount = historyService.size;
-      if (healthy) {
-        return `✅ **LM Studio** is reachable.\n📊 Active user histories: **${historyCount}**`;
-      } else {
-        return `❌ **LM Studio** is **not reachable**. Check the FRP tunnel and LM Studio server.`;
+
+      const modelLine = localOnline
+        ? `🟢 Local Ollama **online** (active model: **${activeModel ?? "none"}**)`
+        : `🔴 Local Ollama **offline** — using VPS fallback model`;
+
+      return [
+        modelLine,
+        `📊 Active user histories: **${historyCount}**`,
+      ].join("\n");
+    }
+
+    case "search": {
+      const query = parts.slice(1).join(" ").trim();
+      if (!query) {
+        return "Usage: `!search <query>`";
       }
+      // handleForcedSearch sends its own replies
+      handleForcedSearch(message, query).catch((err) => {
+        logger.error("Unhandled error in !search:", err);
+        message.reply("⚠️ An unexpected error occurred during the search.").catch(() => {});
+      });
+      return null;
     }
 
     case "help": {
       return [
         "**Available commands:**",
         "`!reset` — Clear your conversation history",
-        "`!status` — Check if the LLM backend is reachable",
+        "`!status` — Check Ollama availability and active model",
+        "`!search <query>` — Force a web search via SearXNG",
         "`!help` — Show this message",
         "",
         "**Chatting:** Mention me (`@BotName your question`) to start a conversation.",
