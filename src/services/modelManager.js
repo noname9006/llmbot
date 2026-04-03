@@ -68,6 +68,11 @@ export async function switchToHeavy() {
 export function resetHeavyIdleTimer() {
   clearHeavyIdleTimer();
   heavyIdleTimer = setTimeout(async () => {
+    // Guard: only unload if heavy model is still active when timer fires
+    if (activeLocalModel !== "heavy") {
+      heavyIdleTimer = null;
+      return;
+    }
     logger.info("Heavy model idle timeout — unloading Model 3");
     activeLocalModel = null;
     heavyIdleTimer = null;

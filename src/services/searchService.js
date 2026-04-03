@@ -9,12 +9,12 @@ import { logger } from "../logger.js";
  * @returns {Promise<string>}  formatted results block ready to inject into LLM context
  */
 export async function search(query) {
-  const base = config.search.searxngBaseUrl;
-  if (!base) {
+  const searxngBaseUrl = config.search.searxngBaseUrl;
+  if (!searxngBaseUrl) {
     throw new Error("SEARXNG_BASE_URL is not configured");
   }
 
-  const url = new URL("/search", base);
+  const url = new URL("/search", searxngBaseUrl);
   url.searchParams.set("q", query);
   url.searchParams.set("format", "json");
   url.searchParams.set("categories", "general");

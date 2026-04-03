@@ -53,6 +53,7 @@ export async function handleCommand(message, _client) {
       // handleForcedSearch sends its own replies
       handleForcedSearch(message, query).catch((err) => {
         logger.error("Unhandled error in !search:", err);
+        message.reply("⚠️ An unexpected error occurred during the search.").catch(() => {});
       });
       return null;
     }

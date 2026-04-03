@@ -43,7 +43,7 @@ export async function ollamaChat(baseUrl, model, messages, opts = {}) {
   });
 
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
+    const text = await res.text().catch(() => "(unable to read error details)");
     throw new Error(
       `Ollama /api/chat failed: ${res.status} ${res.statusText} — ${text}`
     );
