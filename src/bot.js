@@ -6,7 +6,7 @@ import {
 import { config } from "./config.js";
 import { logger } from "./logger.js";
 import { onMessage } from "./handlers/messageHandler.js";
-import { checkHealth } from "./services/llmService.js";
+import { startPolling } from "./services/availabilityService.js";
 
 export function createBot() {
   const client = new Client({
@@ -31,8 +31,8 @@ export function createBot() {
       logger.info("No channel restriction — responding in all channels.");
     }
 
-    // Verify LLM backend on startup
-    await checkHealth();
+    // Start polling local Ollama availability (immediate + interval)
+    startPolling();
   });
 
   // ── Messages ─────────────────────────────────────────────────────────────────
