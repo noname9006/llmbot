@@ -11,7 +11,13 @@ const { historyService } = await import("../src/services/historyService.js");
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-/** Capture console.log calls that come from logger.warn during a block. */
+/**
+ * Runs `fn` synchronously and returns any console.log lines that contain
+ * "[WARN]" (i.e. lines emitted by logger.warn).
+ *
+ * Works because logger.warn writes to console.log synchronously — if logging
+ * ever becomes async this helper would need to be rewritten.
+ */
 function captureWarnLogs(fn) {
   const captured = [];
   const orig = console.log;
