@@ -22,11 +22,36 @@ const STREAM_CHUNK_LIMIT = 1900;
 // query — prevents multi-line model output from polluting the search term.
 const SEARCH_SIGNAL_RE = /^__SEARCH__:\s*([^\n]+)/;
 
+// Regex to detect escalation signal — matches the signal even when the model
+// appends trailing commentary (e.g. "__ESCALATE__ because this is complex").
+const ESCALATE_SIGNAL_RE = /^__ESCALATE__/;
+
+// User-facing fallback messages for unexpected model signal outputs.
+const MSG_VPS_ESCALATE_FALLBACK =
+  "Sorry, I'm having trouble answering this right now. Please try again later.";
+const MSG_HEAVY_ESCALATE_FALLBACK =
+  "Sorry, I'm having trouble answering this right now. Please try again later.";
+const MSG_SEARCH_EMPTY_QUERY =
+  "I wanted to search for something but couldn't determine a valid query.";
+const MSG_SEARCH_RECURSION =
+  "I tried to look that up but wasn't able to find a satisfactory result.";
+
 // Per-user rate limiter
 const rateLimiter = createRateLimiter({
   maxRequests: config.rateLimit.maxRequests,
   windowMs: config.rateLimit.windowMs,
 });
+
+/**
+ * Returns the number of whole seconds a user must wait before their next
+ * request is allowed.  Always ≥ 1 so the display never shows "wait 0s".
+ * Only call this after rateLimiter.check() returned false.
+ * @param {string} userId
+ * @returns {number}
+ */
+function rateLimitRetrySec(userId) {
+  return Math.max(1, Math.ceil(rateLimiter.retryAfterMs(userId) / 1000));
+}
 
 // Global concurrency semaphore — caps simultaneous LLM calls
 const semaphore = createSemaphore(config.rateLimit.maxConcurrent);
@@ -83,7 +108,7 @@ export async function onMessage(message, client) {
 
   // ── Per-user rate limit ─────────────────────────────────────────────────────
   if (!rateLimiter.check(message.author.id)) {
-    const retryAfterSec = Math.max(1, Math.ceil(rateLimiter.retryAfterMs(message.author.id) / 1000));
+    const retryAfterSec = rateLimitRetrySec(message.author.id);
     await message.reply(
       `⏳ You're sending messages too fast. Please wait ${retryAfterSec}s before trying again.`
     ).catch(() => {});
@@ -170,11 +195,10 @@ async function routeAndRespond(reqId, message, messages, userText) {
     const response = await llamaChat(config.llama.vpsUrl, messages);
     // VPS model should never emit __ESCALATE__; if it does, replace with a
     // safe fallback rather than leaking the raw signal string to the user.
-    if (response.trim() === "__ESCALATE__") {
+    if (ESCALATE_SIGNAL_RE.test(response.trim())) {
       logger.warn(`[${reqId}] VPS model emitted __ESCALATE__ — replacing with fallback`);
-      const fallback = "Sorry, I'm having trouble answering this right now. Please try again later.";
-      await sendChunked(message, fallback);
-      return fallback;
+      await sendChunked(message, MSG_VPS_ESCALATE_FALLBACK);
+      return MSG_VPS_ESCALATE_FALLBACK;
     }
     const finalResponse = await handleSearchSignal(
       reqId,
@@ -195,7 +219,7 @@ async function routeAndRespond(reqId, message, messages, userText) {
 
   const trimmed = model2Response.trim();
 
-  if (trimmed === "__ESCALATE__") {
+  if (ESCALATE_SIGNAL_RE.test(trimmed)) {
     // ── Route 3: escalation → Model 3 ────────────────────────────────────
     return await handleEscalation(reqId, message, messages);
   }
@@ -258,6 +282,14 @@ async function handleEscalation(reqId, message, messages) {
 
   const trimmedHeavy = heavyResponse.trim();
 
+  // Guard: Model 3 should not re-emit __ESCALATE__; replace with fallback
+  // rather than leaking the raw signal string to the user.
+  if (ESCALATE_SIGNAL_RE.test(trimmedHeavy)) {
+    logger.warn(`[${reqId}] Model 3 emitted __ESCALATE__ — replacing with fallback`);
+    await sendChunked(message, MSG_HEAVY_ESCALATE_FALLBACK);
+    return MSG_HEAVY_ESCALATE_FALLBACK;
+  }
+
   // Handle search signal from Model 3 as well
   const searchMatch = SEARCH_SIGNAL_RE.exec(trimmedHeavy);
   if (searchMatch) {
@@ -299,7 +331,7 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
   // Guard: empty query after sanitization (e.g. the model emitted "__SEARCH__:  ")
   if (!query) {
     logger.warn(`[${reqId}] Search signal with empty query — skipping search`);
-    return "I wanted to search for something but couldn't determine a valid query.";
+    return MSG_SEARCH_EMPTY_QUERY;
   }
   logger.info(`[${reqId}] Search signal detected: "${query}" (url: ${baseUrl})`);
 
@@ -340,7 +372,7 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
   // raw __SEARCH__: string from leaking to the user as its final reply.
   if (SEARCH_SIGNAL_RE.test(finalResponse.trim())) {
     logger.warn(`[${reqId}] Model returned a second search signal — aborting recursion`);
-    return "I tried to look that up but wasn't able to find a satisfactory result.";
+    return MSG_SEARCH_RECURSION;
   }
 
   return finalResponse;
@@ -356,7 +388,7 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
 export async function handleForcedSearch(message, query) {
   // ── Per-user rate limit (commands bypass the top-level check) ──────────────
   if (!rateLimiter.check(message.author.id)) {
-    const retryAfterSec = Math.max(1, Math.ceil(rateLimiter.retryAfterMs(message.author.id) / 1000));
+    const retryAfterSec = rateLimitRetrySec(message.author.id);
     await message
       .reply(`⏳ You're sending messages too fast. Please wait ${retryAfterSec}s before trying again.`)
       .catch(() => {});

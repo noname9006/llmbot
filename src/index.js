@@ -2,7 +2,7 @@ import { config } from "./config.js";
 import { logger } from "./logger.js";
 import { createBot } from "./bot.js";
 import { getSemaphoreStats } from "./handlers/messageHandler.js";
-import { cancelHeavyIdleTimer } from "./services/agentService.js";
+import { clearHeavyIdleTimer } from "./services/agentService.js";
 
 logger.info("Starting discord-llm-bot...");
 logger.info(`VPS llama-server: ${config.llama.vpsUrl} (model: ${config.llama.vpsModelFile})`);
@@ -44,7 +44,7 @@ async function shutdown(signal) {
 
   // Cancel the heavy-model idle timer so it cannot fire an agentStop() call
   // after the process has started tearing down.
-  cancelHeavyIdleTimer();
+  clearHeavyIdleTimer();
 
   logger.info("Shutdown complete — disconnecting from Discord");
   client.destroy();

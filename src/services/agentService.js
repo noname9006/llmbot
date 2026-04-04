@@ -128,7 +128,10 @@ export async function switchToCommon() {
 
     const gen = generation; // capture before going async
     logger.debug("switchToCommon: starting /start for common model");
-    pendingSwitch = agentStart(config.llama.localModelCommonFile)
+    // Capture the promise reference so .finally only clears pendingSwitch if
+    // it still refers to THIS promise — prevents stomping a new promise that
+    // was assigned after resetActiveModelOnReconnect() ran concurrently.
+    const p = agentStart(config.llama.localModelCommonFile)
       .then(() => {
         if (generation === gen) activeLocalModel = "common";
         else logger.debug("switchToCommon: skipping stale state update (generation changed)");
@@ -139,8 +142,9 @@ export async function switchToCommon() {
         throw err;
       })
       .finally(() => {
-        pendingSwitch = null;
+        if (pendingSwitch === p) pendingSwitch = null;
       });
+    pendingSwitch = p;
 
     await pendingSwitch; // throws on failure, propagating to the caller
   }
@@ -166,7 +170,8 @@ export async function switchToHeavy() {
 
     const gen = generation; // capture before going async
     logger.debug("switchToHeavy: starting /start for heavy model");
-    pendingSwitch = agentStart(config.llama.localModelHeavyFile)
+    // Same reference-guard pattern as switchToCommon.
+    const p = agentStart(config.llama.localModelHeavyFile)
       .then(() => {
         if (generation === gen) activeLocalModel = "heavy";
         else logger.debug("switchToHeavy: skipping stale state update (generation changed)");
@@ -177,8 +182,9 @@ export async function switchToHeavy() {
         throw err;
       })
       .finally(() => {
-        pendingSwitch = null;
+        if (pendingSwitch === p) pendingSwitch = null;
       });
+    pendingSwitch = p;
 
     await pendingSwitch;
   }
@@ -208,20 +214,17 @@ export function resetHeavyIdleTimer() {
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
-function clearHeavyIdleTimer() {
+/**
+ * Cancels the Model 3 idle timer without stopping llama-server.
+ * Called internally (by switchToCommon / resetHeavyIdleTimer) and exported
+ * for use during graceful shutdown so the idle callback cannot fire and
+ * attempt an agentStop() after the process has already begun tearing down.
+ */
+export function clearHeavyIdleTimer() {
   if (heavyIdleTimer !== null) {
     clearTimeout(heavyIdleTimer);
     heavyIdleTimer = null;
   }
-}
-
-/**
- * Cancels the Model 3 idle timer without stopping llama-server.
- * Call during graceful shutdown so the idle callback cannot fire and attempt
- * an agentStop() after the process has already begun tearing down.
- */
-export function cancelHeavyIdleTimer() {
-  clearHeavyIdleTimer();
 }
 
 /**

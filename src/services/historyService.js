@@ -1,4 +1,5 @@
 import { config } from "../config.js";
+import { logger } from "../logger.js";
 
 // Histories inactive for longer than this are evicted by cleanup()
 const HISTORY_TTL_MS = 24 * 60 * 60_000; // 24 hours
@@ -130,6 +131,9 @@ class HistoryService {
       firstUserIdx++;
     }
     if (firstUserIdx > 0) {
+      logger.warn(
+        `HistoryService: removed ${firstUserIdx} leading assistant turn(s) for user ${userId} — possible history corruption`
+      );
       history.splice(0, firstUserIdx);
     }
   }

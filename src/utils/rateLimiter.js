@@ -42,9 +42,9 @@ export function createRateLimiter({ maxRequests, windowMs }) {
     const cutoff = now - windowMs;
     const timestamps = (windows.get(userId) ?? []).filter((t) => t > cutoff);
     if (timestamps.length < maxRequests) return 0;
-    // Clamp to 0 — clock skew or sub-millisecond races can yield a negative
-    // value without this guard, which would confuse the caller's Math.ceil().
-    return Math.max(0, timestamps[0] + windowMs - now);
+    // All retained timestamps satisfy t > cutoff, so timestamps[0] + windowMs > now
+    // and the result is guaranteed positive when the user is rate-limited.
+    return timestamps[0] + windowMs - now;
   }
 
   /**
