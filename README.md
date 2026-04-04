@@ -279,29 +279,32 @@ discord-llm-bot/
 
 The easiest way is to download a pre-built binary from the llama.cpp GitHub releases page.
 
-```bash
-# On the VPS — download the latest pre-built Linux AVX2 bundle
-# Check https://github.com/ggerganov/llama.cpp/releases for the latest tag
-LLAMA_VERSION=b5510   # replace with the latest version tag
+> **Note:** Since ~b5700, llama.cpp uses dynamically loaded CPU backends (`.so` files). The binary must run from its extracted directory, or `LD_LIBRARY_PATH` must point to it. Do **not** copy just the binary to `/usr/local/bin`.
 
-wget https://github.com/ggerganov/llama.cpp/releases/download/${LLAMA_VERSION}/llama-${LLAMA_VERSION}-bin-ubuntu-x64.zip -O llama.zip
-unzip llama.zip -d llama-bin
+**Install required system dependency:**
+
+```bash
+sudo apt-get install -y libgomp1
 ```
 
-> **Tip:** If the VPS does not support AVX2 (some older or ARM VMs), look for an `avx` or `noavx` build. Check support with: `grep -o 'avx[^ ]*' /proc/cpuinfo | sort -u`
+**Download and extract the latest build:**
+
+```bash
+# Check https://github.com/ggml-org/llama.cpp/releases for the latest tag
+LLAMA_VERSION=b8664   # replace with the latest version tag
+
+wget https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_VERSION}/llama-${LLAMA_VERSION}-bin-ubuntu-x64.tar.gz -O llama.tar.gz
+mkdir llama-${LLAMA_VERSION}
+tar -xzf llama.tar.gz -C llama-${LLAMA_VERSION}
+```
 
 The binary you need is called `llama-server` (no extension). Verify:
 
 ```bash
-./llama-bin/build/bin/llama-server --version
+LD_LIBRARY_PATH=~/llama-${LLAMA_VERSION} ~/llama-${LLAMA_VERSION}/llama-server --version
 ```
 
-Move it somewhere permanent:
-
-```bash
-sudo cp llama-bin/build/bin/llama-server /usr/local/bin/llama-server
-sudo chmod +x /usr/local/bin/llama-server
-```
+> **AVX2 note:** The pre-built Ubuntu x64 bundles require AVX2. Check support with: `grep -o 'avx2' /proc/cpuinfo`. If missing, you will need to build from source.
 
 ---
 
@@ -310,35 +313,52 @@ sudo chmod +x /usr/local/bin/llama-server
 **Place your Model 1 (fallback) GGUF file:**
 
 ```bash
-mkdir -p /home/ubuntu/lllm
+mkdir -p /home/ubuntu/llm
 # Copy or download your model, e.g.:
-# wget https://huggingface.co/.../phi4-mini.Q4_K_M.gguf -O /home/ubuntu/lllm/phi4-mini.Q4_K_M.gguf
+# wget https://huggingface.co/.../Phi-4-mini-instruct-Q4_K_M.gguf -O /home/ubuntu/llm/Phi-4-mini-instruct-Q4_K_M.gguf
 ```
 
-**Start llama-server under PM2 (CPU-only, always on):**
+**Create a startup wrapper script:**
+
+Because newer llama.cpp builds load CPU backends from `.so` files at runtime, the binary must be able to find them. The wrapper script sets `LD_LIBRARY_PATH` before starting the server.
 
 ```bash
-pm2 start --name llama-vps \
-  /usr/local/bin/llama-server \
-  -- \
-  --model /home/ubuntu/lllm/phi4-mini.Q4_K_M.gguf \
+nano /home/ubuntu/llm_bot/start-llama.sh
+```
+
+Paste the following (adjust `LLAMA_VERSION`, model path, and flags to match your setup):
+
+```bash
+#!/bin/bash
+export LD_LIBRARY_PATH=/home/ubuntu/llm_bot/llama-b8664:$LD_LIBRARY_PATH
+exec /home/ubuntu/llm_bot/llama-b8664/llama-server \
+  --model /home/ubuntu/llm/Phi-4-mini-instruct-Q4_K_M.gguf \
   --port 8080 \
-  --host 127.0.0.1 \
-  -ngl 0           # CPU-only; 0 GPU layers
+  --host 0.0.0.0 \
+  --ctx-size 4096
 ```
 
-Save the PM2 process list so it survives a reboot:
+Save (`Ctrl+O`, `Enter`, `Ctrl+X`) and make it executable:
 
 ```bash
+chmod +x /home/ubuntu/llm_bot/start-llama.sh
+```
+
+> **`--ctx-size` note:** The Phi-4-mini model has a native context of 131072 tokens. Without this flag the server will attempt to allocate ~16 GB for the KV cache and crash with an OOM error on a typical VPS. Set it to a value your RAM can support (4096 is safe for most VPS plans; 8192 if you have ≥8 GB free).
+
+**Start llama-server under PM2:**
+
+```bash
+pm2 start /home/ubuntu/llm_bot/start-llama.sh --name llama-vps
 pm2 save
-pm2 startup   # follow the printed command (it will look like: sudo env PATH=... pm2 startup ...)
+pm2 startup   # follow the printed command to enable auto-start on reboot
 ```
 
 Verify llama-server is running:
 
 ```bash
 curl http://localhost:8080/health
-# Expected: {"status":"ok"} or similar
+# Expected: {"status":"ok"}
 ```
 
 **llama-server common flags reference:**
@@ -347,10 +367,12 @@ curl http://localhost:8080/health
 |------|---------|
 | `--model <path>` | Path to the GGUF model file |
 | `--port <n>` | Port to listen on |
-| `--host <ip>` | Bind address (`127.0.0.1` for local-only) |
-| `-ngl <n>` | GPU layers to offload (`0` = CPU-only) |
-| `--ctx-size <n>` | Context window size (default varies by model) |
+| `--host <ip>` | Bind address (`0.0.0.0` to allow connections from the bot process) |
+| `--ctx-size <n>` | Context window size — **required** on low-RAM VPS to prevent OOM |
+| `-ngl <n>` | GPU layers to offload (`0` = CPU-only; omit on CPU-only VPS) |
 | `-np <n>` | Number of parallel inference slots |
+
+> **Log note:** llama-server writes all output (including normal startup messages) to stderr. PM2 stores this in the error log (`pm2 logs llama-vps`). This is expected — it does not indicate errors.
 
 ---
 
