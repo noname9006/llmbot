@@ -7,6 +7,12 @@ let activeLocalModel = null;
 // Idle timer reference for Model 3 (heavy)
 let heavyIdleTimer = null;
 
+// Monotonically-increasing counter; incremented on every reconnect.
+// Each pendingSwitch closure captures the generation at creation time and
+// guards its state-update callbacks so a stale in-flight /start cannot
+// overwrite the null that resetActiveModelOnReconnect() just set.
+let generation = 0;
+
 const HEAVY_IDLE_MS = 15 * 60 * 1000; // 15 minutes
 
 // Timeout for model start requests — loading a large model can take a while
@@ -90,6 +96,9 @@ export function resetActiveModelOnReconnect() {
     );
     activeLocalModel = null;
   }
+  // Increment generation so any in-flight pendingSwitch callbacks from the
+  // previous connection become no-ops and cannot re-set activeLocalModel.
+  generation++;
   // Also reset the circuit breaker so the fresh connection gets a clean slate
   consecutiveFailures = 0;
   circuitState = "CLOSED";
@@ -117,13 +126,16 @@ export async function switchToCommon() {
       continue;
     }
 
+    const gen = generation; // capture before going async
     logger.debug("switchToCommon: starting /start for common model");
     pendingSwitch = agentStart(config.llama.localModelCommonFile)
       .then(() => {
-        activeLocalModel = "common";
+        if (generation === gen) activeLocalModel = "common";
+        else logger.debug("switchToCommon: skipping stale state update (generation changed)");
       })
       .catch((err) => {
-        activeLocalModel = null;
+        if (generation === gen) activeLocalModel = null;
+        else logger.debug("switchToCommon: skipping stale error reset (generation changed)");
         throw err;
       })
       .finally(() => {
@@ -152,13 +164,16 @@ export async function switchToHeavy() {
       continue;
     }
 
+    const gen = generation; // capture before going async
     logger.debug("switchToHeavy: starting /start for heavy model");
     pendingSwitch = agentStart(config.llama.localModelHeavyFile)
       .then(() => {
-        activeLocalModel = "heavy";
+        if (generation === gen) activeLocalModel = "heavy";
+        else logger.debug("switchToHeavy: skipping stale state update (generation changed)");
       })
       .catch((err) => {
-        activeLocalModel = null;
+        if (generation === gen) activeLocalModel = null;
+        else logger.debug("switchToHeavy: skipping stale error reset (generation changed)");
         throw err;
       })
       .finally(() => {
@@ -198,6 +213,15 @@ function clearHeavyIdleTimer() {
     clearTimeout(heavyIdleTimer);
     heavyIdleTimer = null;
   }
+}
+
+/**
+ * Cancels the Model 3 idle timer without stopping llama-server.
+ * Call during graceful shutdown so the idle callback cannot fire and attempt
+ * an agentStop() after the process has already begun tearing down.
+ */
+export function cancelHeavyIdleTimer() {
+  clearHeavyIdleTimer();
 }
 
 /**

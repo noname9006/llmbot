@@ -120,6 +120,18 @@ class HistoryService {
     if (history.length > maxMessages) {
       history.splice(0, history.length - maxMessages);
     }
+
+    // After an even-count trim the oldest remaining message might be an
+    // assistant turn (if the conversation started mid-pair or was corrupted).
+    // Most inference backends reject history that does not start with a user
+    // message, so remove any leading assistant entries in a single splice.
+    let firstUserIdx = 0;
+    while (firstUserIdx < history.length && history[firstUserIdx].role !== "user") {
+      firstUserIdx++;
+    }
+    if (firstUserIdx > 0) {
+      history.splice(0, firstUserIdx);
+    }
   }
 }
 

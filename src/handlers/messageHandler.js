@@ -17,8 +17,10 @@ import { createRateLimiter, createSemaphore } from "../utils/rateLimiter.js";
 // Leave headroom for edits — Discord's hard limit is 2000 chars
 const STREAM_CHUNK_LIMIT = 1900;
 
-// Regex to detect search signal from any model
-const SEARCH_SIGNAL_RE = /^__SEARCH__:\s*(.+)$/s;
+// Regex to detect search signal from any model.
+// Uses [^\n]+ (not .+ with /s) so only the first line is captured as the
+// query — prevents multi-line model output from polluting the search term.
+const SEARCH_SIGNAL_RE = /^__SEARCH__:\s*([^\n]+)/;
 
 // Per-user rate limiter
 const rateLimiter = createRateLimiter({
@@ -81,7 +83,7 @@ export async function onMessage(message, client) {
 
   // ── Per-user rate limit ─────────────────────────────────────────────────────
   if (!rateLimiter.check(message.author.id)) {
-    const retryAfterSec = Math.ceil(rateLimiter.retryAfterMs(message.author.id) / 1000);
+    const retryAfterSec = Math.max(1, Math.ceil(rateLimiter.retryAfterMs(message.author.id) / 1000));
     await message.reply(
       `⏳ You're sending messages too fast. Please wait ${retryAfterSec}s before trying again.`
     ).catch(() => {});
@@ -166,6 +168,14 @@ async function routeAndRespond(reqId, message, messages, userText) {
     // ── Route 1: local offline → use VPS Model 1 ───────────────────────────
     logger.info(`[${reqId}] Local agent offline — using VPS model (Model 1)`);
     const response = await llamaChat(config.llama.vpsUrl, messages);
+    // VPS model should never emit __ESCALATE__; if it does, replace with a
+    // safe fallback rather than leaking the raw signal string to the user.
+    if (response.trim() === "__ESCALATE__") {
+      logger.warn(`[${reqId}] VPS model emitted __ESCALATE__ — replacing with fallback`);
+      const fallback = "Sorry, I'm having trouble answering this right now. Please try again later.";
+      await sendChunked(message, fallback);
+      return fallback;
+    }
     const finalResponse = await handleSearchSignal(
       reqId,
       message,
@@ -286,6 +296,11 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
   if (!match) return modelResponse;
 
   const query = sanitizeSearchQuery(match[1].trim());
+  // Guard: empty query after sanitization (e.g. the model emitted "__SEARCH__:  ")
+  if (!query) {
+    logger.warn(`[${reqId}] Search signal with empty query — skipping search`);
+    return "I wanted to search for something but couldn't determine a valid query.";
+  }
   logger.info(`[${reqId}] Search signal detected: "${query}" (url: ${baseUrl})`);
 
   // 1. Generate a "I'm searching for X" message using the same endpoint
@@ -320,6 +335,14 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
   ];
 
   const finalResponse = await llamaChat(baseUrl, messagesWithResults);
+
+  // Guard against the model returning another search signal — prevents the
+  // raw __SEARCH__: string from leaking to the user as its final reply.
+  if (SEARCH_SIGNAL_RE.test(finalResponse.trim())) {
+    logger.warn(`[${reqId}] Model returned a second search signal — aborting recursion`);
+    return "I tried to look that up but wasn't able to find a satisfactory result.";
+  }
+
   return finalResponse;
 }
 
@@ -333,7 +356,7 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
 export async function handleForcedSearch(message, query) {
   // ── Per-user rate limit (commands bypass the top-level check) ──────────────
   if (!rateLimiter.check(message.author.id)) {
-    const retryAfterSec = Math.ceil(rateLimiter.retryAfterMs(message.author.id) / 1000);
+    const retryAfterSec = Math.max(1, Math.ceil(rateLimiter.retryAfterMs(message.author.id) / 1000));
     await message
       .reply(`⏳ You're sending messages too fast. Please wait ${retryAfterSec}s before trying again.`)
       .catch(() => {});
@@ -341,6 +364,10 @@ export async function handleForcedSearch(message, query) {
   }
 
   const safeQuery = sanitizeSearchQuery(query);
+  if (!safeQuery) {
+    await message.reply("⚠️ The search query was empty after sanitization.").catch(() => {});
+    return;
+  }
   const reqId = randomUUID().slice(0, 8);
   logger.info(`[${reqId}] Forced search: "${safeQuery}"`);
 
@@ -429,7 +456,7 @@ export function getSemaphoreStats() {
  * @param {string} text
  */
 async function sendChunked(message, text) {
-  const chunks = splitMessage(text || "*(no response)*");
+  const chunks = splitMessage((text ?? "").trim() || "*(no response)*");
   if (chunks.length === 0) {
     await message.reply("*(no response)*");
     return;
