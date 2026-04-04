@@ -22,6 +22,10 @@ export async function withRetry(fn, opts = {}) {
     label = "operation",
   } = opts;
 
+  if (maxAttempts < 1) {
+    throw new Error(`${label}: maxAttempts must be at least 1 (got ${maxAttempts})`);
+  }
+
   let lastErr;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {

@@ -12,6 +12,12 @@ const HEAVY_IDLE_MS = 15 * 60 * 1000; // 15 minutes
 // Timeout for model start requests — loading a large model can take a while
 const START_TIMEOUT_MS = 120_000;
 
+// Single in-flight switch promise shared across all concurrent callers.
+// This ensures only one /start call runs at a time, and the circuit breaker
+// failure counter reflects the true number of distinct attempts (not the
+// number of concurrent callers that happened to observe the same failure).
+let pendingSwitch = null;
+
 // ── Circuit breaker ───────────────────────────────────────────────────────────
 // Prevents thundering-herd load on a struggling agent by temporarily stopping
 // all /start attempts after repeated consecutive failures.
@@ -87,36 +93,81 @@ export function resetActiveModelOnReconnect() {
   // Also reset the circuit breaker so the fresh connection gets a clean slate
   consecutiveFailures = 0;
   circuitState = "CLOSED";
+  // Discard any in-flight switch that was targeting the now-disconnected agent
+  pendingSwitch = null;
 }
 
 /**
  * Ensures Model 2 (common) is the active local model.
- * Skips the /start call if the correct model is already loaded.
+ * Concurrent callers share a single in-flight /start promise so only one
+ * request reaches the agent at a time and the circuit-breaker counts each
+ * distinct switch attempt (not the number of concurrent waiters).
  * Clears the heavy idle timer if it was running.
  */
 export async function switchToCommon() {
   clearHeavyIdleTimer();
-  if (activeLocalModel === "common") {
-    logger.debug("switchToCommon: common model already loaded, skipping /start");
-    return;
+
+  // JS single-thread guarantee: the check and pendingSwitch assignment are
+  // atomic from the event-loop perspective — no other caller can sneak between
+  // "pendingSwitch is null" and "pendingSwitch = …".
+  while (activeLocalModel !== "common") {
+    if (pendingSwitch) {
+      // Wait for the in-flight switch (could be common or heavy); re-evaluate.
+      await pendingSwitch.catch(() => {});
+      continue;
+    }
+
+    logger.debug("switchToCommon: starting /start for common model");
+    pendingSwitch = agentStart(config.llama.localModelCommonFile)
+      .then(() => {
+        activeLocalModel = "common";
+      })
+      .catch((err) => {
+        activeLocalModel = null;
+        throw err;
+      })
+      .finally(() => {
+        pendingSwitch = null;
+      });
+
+    await pendingSwitch; // throws on failure, propagating to the caller
   }
-  await agentStart(config.llama.localModelCommonFile);
-  activeLocalModel = "common";
 }
 
 /**
  * Ensures Model 3 (heavy) is the active local model.
  * Asks the agent to (re)start llama-server with the heavy model.
- * Starts the 15-minute idle timer.
+ * Starts the 15-minute idle timer on success.
+ * Concurrent callers share the single in-flight switch promise.
  */
 export async function switchToHeavy() {
   if (activeLocalModel === "heavy") {
-    logger.debug("switchToHeavy: heavy model already loaded, skipping /start");
     resetHeavyIdleTimer();
     return;
   }
-  await agentStart(config.llama.localModelHeavyFile);
-  activeLocalModel = "heavy";
+
+  while (activeLocalModel !== "heavy") {
+    if (pendingSwitch) {
+      await pendingSwitch.catch(() => {});
+      continue;
+    }
+
+    logger.debug("switchToHeavy: starting /start for heavy model");
+    pendingSwitch = agentStart(config.llama.localModelHeavyFile)
+      .then(() => {
+        activeLocalModel = "heavy";
+      })
+      .catch((err) => {
+        activeLocalModel = null;
+        throw err;
+      })
+      .finally(() => {
+        pendingSwitch = null;
+      });
+
+    await pendingSwitch;
+  }
+
   resetHeavyIdleTimer();
 }
 
@@ -194,8 +245,6 @@ async function agentStart(modelFile) {
     recordCircuitSuccess();
     logger.info(`Agent: model "${modelFile}" is ready`);
   } catch (err) {
-    // Ensure activeLocalModel is not left in a stale state on failure
-    activeLocalModel = null;
     recordCircuitFailure();
     throw err;
   }

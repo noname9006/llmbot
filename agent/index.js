@@ -85,30 +85,74 @@ function startServer(modelFile) {
     const READY_TIMEOUT_MS = 120_000;
     let ready = false;
 
+    // ── readiness helpers ─────────────────────────────────────────────────────
+
+    function markReady() {
+      if (ready) return;
+      ready = true;
+      clearTimeout(timeout);
+      clearInterval(httpProbeInterval);
+      // Set loadedModel only now — /health would otherwise report the model as
+      // loaded before llama-server is actually able to serve inference.
+      loadedModel = modelFile;
+      logger.info(`llama-server ready on port ${LLAMA_SERVER_PORT} (model: ${modelFile})`);
+      resolve();
+    }
+
     const timeout = setTimeout(() => {
       if (!ready) {
+        clearInterval(httpProbeInterval);
         proc.kill();
         reject(new Error(`llama-server did not become ready within ${READY_TIMEOUT_MS}ms`));
       }
     }, READY_TIMEOUT_MS);
 
+    // ── stdout/stderr log-line detection ──────────────────────────────────────
+    // Validated against llama-server b3 (llama.cpp ≥ b3000).
+    // If a future release changes this message, the HTTP probe below acts as
+    // a fallback and will still detect readiness.
     function onData(data) {
       const text = data.toString();
       logger.debug(`[llama-server] ${text.trim()}`);
-      // llama-server prints this line when it's ready to accept connections
-      if (!ready && text.includes("HTTP server listening")) {
-        ready = true;
-        clearTimeout(timeout);
-        logger.info(`llama-server ready on port ${LLAMA_SERVER_PORT} (model: ${modelFile})`);
-        resolve();
+      if (text.includes("HTTP server listening") || text.includes("server is listening")) {
+        markReady();
       }
     }
 
     proc.stdout.on("data", onData);
     proc.stderr.on("data", onData);
 
+    // ── HTTP readiness probe (fallback) ───────────────────────────────────────
+    // Polls GET /health every 3 s starting at 5 s.  Catches cases where the
+    // log line format changes in a future llama-server release.
+    const HTTP_PROBE_INITIAL_DELAY_MS = 5_000;
+    const HTTP_PROBE_INTERVAL_MS = 3_000;
+    let httpProbeInterval = null;
+
+    setTimeout(() => {
+      if (ready) return;
+      httpProbeInterval = setInterval(async () => {
+        if (ready) {
+          clearInterval(httpProbeInterval);
+          return;
+        }
+        try {
+          const res = await fetch(`http://127.0.0.1:${LLAMA_SERVER_PORT}/health`, {
+            signal: AbortSignal.timeout(2_000),
+          });
+          if (res.ok) {
+            logger.debug("llama-server HTTP probe: server is ready");
+            markReady();
+          }
+        } catch {
+          // Not ready yet — keep probing
+        }
+      }, HTTP_PROBE_INTERVAL_MS);
+    }, HTTP_PROBE_INITIAL_DELAY_MS);
+
     proc.on("error", (err) => {
       clearTimeout(timeout);
+      clearInterval(httpProbeInterval);
       if (!ready) {
         reject(new Error(`Failed to spawn llama-server: ${err.message}`));
       } else {
@@ -117,19 +161,21 @@ function startServer(modelFile) {
     });
 
     proc.on("exit", (code, signal) => {
+      clearTimeout(timeout);
+      clearInterval(httpProbeInterval);
       logger.info(`llama-server exited (code=${code} signal=${signal})`);
       if (serverProcess === proc) {
         serverProcess = null;
         loadedModel = null;
       }
       if (!ready) {
-        clearTimeout(timeout);
         reject(new Error(`llama-server exited before becoming ready (code=${code})`));
       }
     });
 
     serverProcess = proc;
-    loadedModel = modelFile;
+    // loadedModel is set in markReady() — not here — so /health never reports
+    // a model as loaded until llama-server is confirmed ready to serve.
   });
 }
 
@@ -149,17 +195,20 @@ function stopServer() {
     serverProcess = null;
     loadedModel = null;
 
-    proc.once("exit", () => resolve());
-    proc.kill();
-
-    // Force-kill after 10 seconds if it hasn't exited
-    setTimeout(() => {
+    // Force-kill after 10 seconds if it hasn't exited cleanly
+    const sigkillTimer = setTimeout(() => {
       try {
         proc.kill("SIGKILL");
       } catch (err) {
         logger.debug(`SIGKILL failed (process likely already gone): ${err.message}`);
       }
     }, 10_000);
+
+    proc.once("exit", () => {
+      clearTimeout(sigkillTimer);
+      resolve();
+    });
+    proc.kill();
   });
 }
 
@@ -211,6 +260,17 @@ app.post("/start", async (req, res) => {
   const modelFile = req.body?.model;
   if (!modelFile || typeof modelFile !== "string") {
     return res.status(400).json({ error: "Missing or invalid 'model' field" });
+  }
+
+  // Prevent path-traversal attacks (e.g. "../../etc/passwd").
+  // path.relative() returns a string starting with ".." if resolvedModelPath
+  // escapes resolvedModelDir, regardless of OS path separator edge cases.
+  const resolvedModelPath = path.resolve(LLAMA_MODEL_DIR, modelFile);
+  const resolvedModelDir = path.resolve(LLAMA_MODEL_DIR);
+  const rel = path.relative(resolvedModelDir, resolvedModelPath);
+  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+    logger.warn(`/start rejected — path traversal attempt: "${modelFile}"`);
+    return res.status(400).json({ error: "Invalid model path" });
   }
 
   logger.info(`/start requested: model="${modelFile}"`);

@@ -88,6 +88,8 @@ export const config = {
   health: {
     // Set to a port number to expose a /health HTTP endpoint. 0 = disabled.
     port: parseInt(optional("HEALTH_PORT", "0"), 10),
+    // Optional bearer token to protect the /health endpoint. Empty = no auth.
+    token: optional("HEALTH_TOKEN", ""),
   },
   logLevel: optional("LOG_LEVEL", "info"),
 };

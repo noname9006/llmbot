@@ -29,6 +29,13 @@ const rateLimiter = createRateLimiter({
 // Global concurrency semaphore — caps simultaneous LLM calls
 const semaphore = createSemaphore(config.rateLimit.maxConcurrent);
 
+// Periodic cleanup — prevent unbounded Map growth in long-running deployments
+// (runs once per hour; harmless if the process is restarted frequently)
+setInterval(() => {
+  rateLimiter.cleanup();
+  historyService.cleanup();
+}, 60 * 60_000).unref();
+
 /**
  * Called for every incoming message.
  * @param {import("discord.js").Message} message
@@ -48,7 +55,10 @@ export async function onMessage(message, client) {
 
   // ── Commands (no mention required) ─────────────────────────────────────────
   if (isCommand(message.content)) {
-    const reply = await handleCommand(message, client);
+    const reply = await handleCommand(message, client, {
+      handleForcedSearch,
+      getSemaphoreStats,
+    });
     if (reply) {
       await message.reply(reply);
     }
@@ -97,20 +107,20 @@ export async function onMessage(message, client) {
     8_000
   );
 
-  // ── Build message history ───────────────────────────────────────────────────
-  historyService.pushUser(message.author.id, userText);
-  const messages = historyService.getMessages(message.author.id);
-
-  // ── Inject ephemeral capitalization reminder ────────────────────────────────
-  const capReminder = buildCapReminder(userText);
-  const messagesWithReminder = capReminder
-    ? [...messages, { role: "system", content: capReminder }]
-    : messages;
-
   // ── Acquire global concurrency slot ────────────────────────────────────────
   await semaphore.acquire();
 
   try {
+    // ── Build message history (inside semaphore to avoid dirty-history races) ─
+    historyService.pushUser(message.author.id, userText);
+    const messages = historyService.getMessages(message.author.id);
+
+    // ── Inject ephemeral capitalization reminder ──────────────────────────────
+    const capReminder = buildCapReminder(userText);
+    const messagesWithReminder = capReminder
+      ? [...messages, { role: "system", content: capReminder }]
+      : messages;
+
     const done = logger.timer(`[${reqId}] full response`, "info");
     const fullResponse = await routeAndRespond(
       reqId,
@@ -204,7 +214,8 @@ async function routeAndRespond(reqId, message, messages, userText) {
 async function handleEscalation(reqId, message, messages) {
   logger.info(`[${reqId}] Model 2 escalated — switching to Model 3 (heavy)`);
 
-  // 1. Ask Model 2 to generate a natural "I need more time" transition message
+  // 1. Ask Model 2 to generate a "I need more time" transition message BEFORE
+  //    switching away from it (Model 2 won't be available after switchToHeavy).
   const transitionMessages = [
     ...messages,
     {
@@ -224,11 +235,13 @@ async function handleEscalation(reqId, message, messages) {
     transitionMessages
   );
 
-  // 2. Post the transition message immediately
-  await sendChunked(message, transitionMsg);
-
-  // 3. Switch to Model 3
+  // 2. Switch to Model 3 BEFORE posting the transition message.
+  //    If this fails it throws, the caller's catch block handles cleanup, and
+  //    the user never sees a "thinking…" message that leads nowhere.
   await switchToHeavy();
+
+  // 3. Safe to post transition now that Model 3 is confirmed ready.
+  await sendChunked(message, transitionMsg);
 
   // 4. Run Model 3 with the full conversation history
   const heavyResponse = await llamaChat(config.llama.localLlamaUrl, messages);
@@ -272,7 +285,7 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
   const match = SEARCH_SIGNAL_RE.exec(modelResponse.trim());
   if (!match) return modelResponse;
 
-  const query = match[1].trim();
+  const query = sanitizeSearchQuery(match[1].trim());
   logger.info(`[${reqId}] Search signal detected: "${query}" (url: ${baseUrl})`);
 
   // 1. Generate a "I'm searching for X" message using the same endpoint
@@ -318,8 +331,18 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
  * @param {string} query
  */
 export async function handleForcedSearch(message, query) {
+  // ── Per-user rate limit (commands bypass the top-level check) ──────────────
+  if (!rateLimiter.check(message.author.id)) {
+    const retryAfterSec = Math.ceil(rateLimiter.retryAfterMs(message.author.id) / 1000);
+    await message
+      .reply(`⏳ You're sending messages too fast. Please wait ${retryAfterSec}s before trying again.`)
+      .catch(() => {});
+    return;
+  }
+
+  const safeQuery = sanitizeSearchQuery(query);
   const reqId = randomUUID().slice(0, 8);
-  logger.info(`[${reqId}] Forced search: "${query}"`);
+  logger.info(`[${reqId}] Forced search: "${safeQuery}"`);
 
   await message.channel.sendTyping();
   const typingInterval = setInterval(
@@ -348,7 +371,7 @@ export async function handleForcedSearch(message, query) {
       {
         role: "system",
         content:
-          `The user issued a !search command for: "${query}". ` +
+          `The user issued a !search command for: "${safeQuery}". ` +
           "Generate a brief, natural message (1 sentence) telling the user you're looking this up. " +
           "Match their capitalization style. Do not mention 'model' or 'AI'.",
       },
@@ -359,16 +382,16 @@ export async function handleForcedSearch(message, query) {
     // Run search
     let searchResults;
     try {
-      searchResults = await search(query);
+      searchResults = await search(safeQuery);
     } catch (err) {
       logger.error(`[${reqId}] Forced search failed:`, err);
-      searchResults = `[Search results for "${query}":\nSearch unavailable — ${err.message}]`;
+      searchResults = `[Search results for "${safeQuery}":\nSearch unavailable — ${err.message}]`;
     }
 
     // Re-run model with results
     const messagesWithResults = [
       ...messages,
-      { role: "user", content: `!search ${query}` },
+      { role: "user", content: `!search ${safeQuery}` },
       { role: "system", content: searchResults },
     ];
 
@@ -376,7 +399,7 @@ export async function handleForcedSearch(message, query) {
     await sendChunked(message, finalResponse);
 
     // Persist to history
-    historyService.pushUser(message.author.id, `!search ${query}`);
+    historyService.pushUser(message.author.id, `!search ${safeQuery}`);
     historyService.pushAssistant(message.author.id, finalResponse);
   } catch (err) {
     logger.error(`[${reqId}] Error during forced search:`, err);
@@ -448,6 +471,22 @@ function buildCapReminder(text) {
 }
 
 /**
+ * Sanitizes a search query before embedding it in a system message.
+ * Strips characters that could be used for prompt injection, collapses
+ * whitespace, and truncates to a safe length.
+ * @param {string} query
+ * @returns {string}
+ */
+function sanitizeSearchQuery(query) {
+  return query
+    .replace(/[\r\n]+/g, " ")   // no newlines — they could break system message structure
+    .replace(/[`"]/g, "")       // no backticks or quotes — could escape template strings
+    .replace(/\s{2,}/g, " ")    // collapse runs of whitespace
+    .slice(0, 200)               // hard length cap
+    .trim();
+}
+
+/**
  * Splits text into chunks of at most `limit` characters.
  * Prefers splitting on newline boundaries, then word boundaries.
  * @param {string} text
@@ -474,7 +513,8 @@ function splitMessage(text, limit = STREAM_CHUNK_LIMIT) {
       splitAt = limit;
     }
 
-    chunks.push(remaining.slice(0, splitAt).trimEnd());
+    const chunk = remaining.slice(0, splitAt).trimEnd();
+    if (chunk) chunks.push(chunk);
     remaining = remaining.slice(splitAt).trimStart();
   }
 

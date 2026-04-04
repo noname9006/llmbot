@@ -6,6 +6,7 @@ import { resetActiveModelOnReconnect } from "./agentService.js";
 
 let isAgentOnline = false;
 let agentPollTimer = null;
+let vpsPollTimer = null;
 /** Timestamp (ms) when the agent last went offline, or null if currently online */
 let agentOfflineSince = null;
 /** Timestamp (ms) when the agent last came online, or null if currently offline */
@@ -65,7 +66,7 @@ export function startPolling() {
     pollAgent().catch((err) => logger.warn("Agent availability poll error:", err.message));
   }, config.availability.pollIntervalMs);
 
-  setInterval(() => {
+  vpsPollTimer = setInterval(() => {
     pollVps().catch((err) => logger.warn("VPS availability poll error:", err.message));
   }, config.availability.pollIntervalMs);
 }

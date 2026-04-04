@@ -28,53 +28,57 @@ export async function llamaChat(baseUrl, messages, opts = {}) {
 
   const done = logger.timer(`llamaChat (${baseUrl})`, "debug");
 
-  return withRetry(
-    async () => {
-      const signal =
-        config.llama.fetchTimeoutMs > 0
-          ? AbortSignal.timeout(config.llama.fetchTimeoutMs)
-          : undefined;
+  try {
+    return await withRetry(
+      async () => {
+        const signal =
+          config.llama.fetchTimeoutMs > 0
+            ? AbortSignal.timeout(config.llama.fetchTimeoutMs)
+            : undefined;
 
-      const res = await fetch(`${baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal,
-      });
+        const res = await fetch(`${baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal,
+        });
 
-      if (!res.ok) {
-        const text = await res.text().catch(() => "(unable to read error details)");
-        const err = new Error(
-          `llama-server /chat/completions failed: ${res.status} ${res.statusText} — ${text}`
-        );
-        // Don't retry client errors (4xx)
-        err.statusCode = res.status;
-        throw err;
+        if (!res.ok) {
+          const text = await res.text().catch(() => "(unable to read error details)");
+          const err = new Error(
+            `llama-server /chat/completions failed: ${res.status} ${res.statusText} — ${text}`
+          );
+          // Don't retry client errors (4xx)
+          err.statusCode = res.status;
+          throw err;
+        }
+
+        const data = await res.json();
+
+        // Log token usage when the server provides it
+        const usage = data?.usage;
+        if (usage) {
+          logger.debug(
+            `llamaChat tokens — prompt:${usage.prompt_tokens ?? "?"} ` +
+              `completion:${usage.completion_tokens ?? "?"} ` +
+              `total:${usage.total_tokens ?? "?"}`
+          );
+        }
+
+        const content = data?.choices?.[0]?.message?.content ?? "";
+        logger.debug(`llamaChat ← ${content.length} chars`);
+        return content.trim();
+      },
+      {
+        maxAttempts: config.retry.maxAttempts,
+        initialDelayMs: config.retry.initialDelayMs,
+        label: `llamaChat(${baseUrl})`,
+        // Retry on network errors and 5xx; abort on 4xx
+        shouldRetry: (err) => !err.statusCode || err.statusCode >= 500,
       }
-
-      const data = await res.json();
-      const elapsed = done();
-
-      // Log token usage when the server provides it
-      const usage = data?.usage;
-      if (usage) {
-        logger.debug(
-          `llamaChat tokens — prompt:${usage.prompt_tokens ?? "?"} ` +
-            `completion:${usage.completion_tokens ?? "?"} ` +
-            `total:${usage.total_tokens ?? "?"} latency:${elapsed}ms`
-        );
-      }
-
-      const content = data?.choices?.[0]?.message?.content ?? "";
-      logger.debug(`llamaChat ← ${content.length} chars`);
-      return content.trim();
-    },
-    {
-      maxAttempts: config.retry.maxAttempts,
-      initialDelayMs: config.retry.initialDelayMs,
-      label: `llamaChat(${baseUrl})`,
-      // Retry on network errors and 5xx; abort on 4xx
-      shouldRetry: (err) => !err.statusCode || err.statusCode >= 500,
-    }
-  );
+    );
+  } finally {
+    // Always log elapsed time — success or all-retries-exhausted failure
+    done();
+  }
 }

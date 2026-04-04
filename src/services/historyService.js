@@ -1,5 +1,8 @@
 import { config } from "../config.js";
 
+// Histories inactive for longer than this are evicted by cleanup()
+const HISTORY_TTL_MS = 24 * 60 * 60_000; // 24 hours
+
 /**
  * Manages per-user conversation history.
  * Each entry: { role: "user" | "assistant", content: string }
@@ -8,6 +11,9 @@ class HistoryService {
   /** @type {Map<string, Array<{role: string, content: string}>>} */
   #store = new Map();
 
+  /** @type {Map<string, number>} userId → last-access timestamp */
+  #lastAccess = new Map();
+
   /**
    * Returns the full message array for a user, including the system prompt
    * prepended as the first message.
@@ -15,6 +21,7 @@ class HistoryService {
    * @returns {Array<{role: string, content: string}>}
    */
   getMessages(userId) {
+    this.#touch(userId);
     const history = this.#store.get(userId) ?? [];
     return [
       { role: "system", content: config.llm.systemPrompt },
@@ -64,6 +71,7 @@ class HistoryService {
    */
   reset(userId) {
     this.#store.delete(userId);
+    this.#lastAccess.delete(userId);
   }
 
   /**
@@ -73,9 +81,28 @@ class HistoryService {
     return this.#store.size;
   }
 
+  /**
+   * Removes entries for users who have been inactive for longer than HISTORY_TTL_MS.
+   * Call periodically to prevent unbounded Map growth.
+   */
+  cleanup() {
+    const cutoff = Date.now() - HISTORY_TTL_MS;
+    for (const [userId, ts] of this.#lastAccess) {
+      if (ts < cutoff) {
+        this.#store.delete(userId);
+        this.#lastAccess.delete(userId);
+      }
+    }
+  }
+
   // ─── private ────────────────────────────────────────────────────────────────
 
+  #touch(userId) {
+    this.#lastAccess.set(userId, Date.now());
+  }
+
   #push(userId, role, content) {
+    this.#touch(userId);
     if (!this.#store.has(userId)) {
       this.#store.set(userId, []);
     }

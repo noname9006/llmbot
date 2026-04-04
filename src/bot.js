@@ -72,7 +72,26 @@ function startHealthServer(discordClient) {
   const port = config.health.port;
   if (!port) return;
 
-  const server = http.createServer((_req, res) => {
+  const server = http.createServer((req, res) => {
+    // Only serve GET /health — reject everything else to minimise attack surface
+    const url = new URL(req.url ?? "/", `http://localhost`);
+    if (req.method !== "GET" || url.pathname !== "/health") {
+      res.writeHead(404, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Not found" }));
+      return;
+    }
+
+    // Optional bearer token protection
+    if (config.health.token) {
+      const auth = req.headers["authorization"] ?? "";
+      const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+      if (token !== config.health.token) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Unauthorized" }));
+        return;
+      }
+    }
+
     const { running, queued } = getSemaphoreStats();
     const payload = {
       status: "ok",

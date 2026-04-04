@@ -6,7 +6,6 @@ import {
   agentOnlineDurationMs,
 } from "../services/localAvailabilityService.js";
 import { getActiveLocalModel } from "../services/agentService.js";
-import { handleForcedSearch, getSemaphoreStats } from "./messageHandler.js";
 import { logger } from "../logger.js";
 
 /**
@@ -20,11 +19,16 @@ export function isCommand(content) {
 /**
  * Dispatches a command message and returns a reply string, or null if unknown.
  * For the !search command, sends its own replies and returns null.
+ *
  * @param {import("discord.js").Message} message
  * @param {import("discord.js").Client} _client
+ * @param {object} handlers  - injected to break the circular dependency with messageHandler
+ * @param {Function} handlers.handleForcedSearch
+ * @param {Function} handlers.getSemaphoreStats
  * @returns {Promise<string|null>}
  */
-export async function handleCommand(message, _client) {
+export async function handleCommand(message, _client, handlers = {}) {
+  const { handleForcedSearch, getSemaphoreStats } = handlers;
   const parts = message.content.trim().slice(1).split(/\s+/);
   const cmd = parts[0];
 
@@ -36,6 +40,11 @@ export async function handleCommand(message, _client) {
     }
 
     case "status": {
+      // Restrict to guild administrators to avoid leaking operational details
+      if (!message.guild || !message.member?.permissions.has("Administrator")) {
+        return "⛔ This command is only available to server administrators.";
+      }
+
       const localOnline = isLocalAvailable();
       const vpsOnline = isVpsAvailable();
       const activeModel = getActiveLocalModel();
@@ -75,6 +84,9 @@ export async function handleCommand(message, _client) {
       const query = parts.slice(1).join(" ").trim();
       if (!query) {
         return "Usage: `!search <query>`";
+      }
+      if (!handleForcedSearch) {
+        return "⚠️ Search handler is not available.";
       }
       // handleForcedSearch sends its own replies
       handleForcedSearch(message, query).catch((err) => {

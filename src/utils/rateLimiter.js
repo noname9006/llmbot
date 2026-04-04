@@ -45,7 +45,21 @@ export function createRateLimiter({ maxRequests, windowMs }) {
     return timestamps[0] + windowMs - now;
   }
 
-  return { check, retryAfterMs };
+  /**
+   * Removes Map entries for users with no in-window timestamps.
+   * Call periodically (e.g. hourly) to prevent unbounded Map growth.
+   */
+  function cleanup() {
+    const now = Date.now();
+    const cutoff = now - windowMs;
+    for (const [userId, timestamps] of windows) {
+      if (timestamps.every((t) => t <= cutoff)) {
+        windows.delete(userId);
+      }
+    }
+  }
+
+  return { check, retryAfterMs, cleanup };
 }
 
 /**
