@@ -1,29 +1,38 @@
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 
-let isLocalOnline = false;
+let isAgentOnline = false;
 let pollTimer = null;
 
 /**
- * Performs a single availability check against the local Ollama instance.
+ * Performs a single health check against the local agent.
  * Updates the cached state and logs any transitions.
  */
 async function poll() {
-  const wasOnline = isLocalOnline;
-  try {
-    const res = await fetch(`${config.ollama.localBaseUrl}/api/tags`, {
-      signal: AbortSignal.timeout(5000),
-    });
-    isLocalOnline = res.ok;
-  } catch {
-    isLocalOnline = false;
+  const wasOnline = isAgentOnline;
+  const { agentUrl, agentToken } = config.llama;
+
+  if (!agentUrl) {
+    // No agent configured — local is never available
+    isAgentOnline = false;
+    return;
   }
 
-  if (wasOnline !== isLocalOnline) {
-    if (isLocalOnline) {
-      logger.info("Local Ollama: offline → online");
+  try {
+    const res = await fetch(`${agentUrl}/health`, {
+      headers: agentToken ? { Authorization: `Bearer ${agentToken}` } : {},
+      signal: AbortSignal.timeout(5000),
+    });
+    isAgentOnline = res.ok;
+  } catch {
+    isAgentOnline = false;
+  }
+
+  if (wasOnline !== isAgentOnline) {
+    if (isAgentOnline) {
+      logger.info("Local agent: offline → online");
     } else {
-      logger.info("Local Ollama: online → offline");
+      logger.info("Local agent: online → offline");
     }
   }
 }
@@ -44,9 +53,9 @@ export function startPolling() {
 }
 
 /**
- * Returns the cached availability state of the local Ollama instance.
+ * Returns the cached availability state of the local agent.
  * @returns {boolean}
  */
 export function isLocalAvailable() {
-  return isLocalOnline;
+  return isAgentOnline;
 }

@@ -1,14 +1,14 @@
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 import { historyService } from "../services/historyService.js";
-import { ollamaChat } from "../services/ollamaService.js";
-import { isLocalAvailable } from "../services/availabilityService.js";
+import { llamaChat } from "../services/llamaService.js";
+import { isLocalAvailable } from "../services/localAvailabilityService.js";
 import {
   getActiveLocalModel,
   switchToCommon,
   switchToHeavy,
   resetHeavyIdleTimer,
-} from "../services/modelManager.js";
+} from "../services/agentService.js";
 import { search } from "../services/searchService.js";
 import { isCommand, handleCommand } from "./commandHandler.js";
 
@@ -98,7 +98,7 @@ export async function onMessage(message, client) {
 
     const errorText =
       "⚠️ Something went wrong while contacting the LLM backend. " +
-      "Make sure Ollama is running and accessible.";
+      "Make sure llama-server is running and accessible.";
 
     await message.reply(errorText).catch(() => {});
 
@@ -123,18 +123,13 @@ export async function onMessage(message, client) {
 async function routeAndRespond(message, messages, userText) {
   if (!isLocalAvailable()) {
     // ── Route 1: local offline → use VPS Model 1 ───────────────────────────
-    logger.info("Local Ollama offline — using VPS model (Model 1)");
-    const response = await ollamaChat(
-      config.ollama.vpsBaseUrl,
-      config.ollama.vpsModel,
-      messages
-    );
+    logger.info("Local agent offline — using VPS model (Model 1)");
+    const response = await llamaChat(config.llama.vpsUrl, messages);
     const finalResponse = await handleSearchSignal(
       message,
       messages,
       response,
-      config.ollama.vpsBaseUrl,
-      config.ollama.vpsModel
+      config.llama.vpsUrl
     );
     await sendChunked(message, finalResponse);
     return finalResponse;
@@ -143,13 +138,8 @@ async function routeAndRespond(message, messages, userText) {
   // ── Route 2: local online → use Model 2 (common) ─────────────────────────
   await switchToCommon();
 
-  logger.info("Local Ollama online — using Model 2 (common)");
-  const model2Response = await ollamaChat(
-    config.ollama.localBaseUrl,
-    config.ollama.localModelCommon,
-    messages,
-    { keepAlive: -1 }
-  );
+  logger.info("Local agent online — using Model 2 (common)");
+  const model2Response = await llamaChat(config.llama.localLlamaUrl, messages);
 
   const trimmed = model2Response.trim();
 
@@ -165,8 +155,7 @@ async function routeAndRespond(message, messages, userText) {
       message,
       messages,
       model2Response,
-      config.ollama.localBaseUrl,
-      config.ollama.localModelCommon
+      config.llama.localLlamaUrl
     );
     await sendChunked(message, finalResponse);
     return finalResponse;
@@ -197,25 +186,19 @@ async function handleEscalation(message, messages) {
     },
   ];
 
-  const transitionMsg = await ollamaChat(
-    config.ollama.localBaseUrl,
-    config.ollama.localModelCommon,
+  const transitionMsg = await llamaChat(
+    config.llama.localLlamaUrl,
     transitionMessages
   );
 
   // 2. Post the transition message immediately
   await sendChunked(message, transitionMsg);
 
-  // 3. Unload Model 2 and load Model 3
+  // 3. Switch to Model 3
   await switchToHeavy();
 
   // 4. Run Model 3 with the full conversation history
-  const heavyResponse = await ollamaChat(
-    config.ollama.localBaseUrl,
-    config.ollama.localModelHeavy,
-    messages,
-    { keepAlive: -1 }
-  );
+  const heavyResponse = await llamaChat(config.llama.localLlamaUrl, messages);
 
   const trimmedHeavy = heavyResponse.trim();
 
@@ -226,8 +209,7 @@ async function handleEscalation(message, messages) {
       message,
       messages,
       heavyResponse,
-      config.ollama.localBaseUrl,
-      config.ollama.localModelHeavy
+      config.llama.localLlamaUrl
     );
     await sendChunked(message, finalResponse);
     return finalResponse;
@@ -249,23 +231,21 @@ async function handleEscalation(message, messages) {
  * @param {Array<{role: string, content: string}>} messages  - full history up to this point
  * @param {string} modelResponse  - the raw model response containing the search signal
  * @param {string} baseUrl
- * @param {string} modelName
  * @returns {Promise<string>}  the final answer after search
  */
 async function handleSearchSignal(
   message,
   messages,
   modelResponse,
-  baseUrl,
-  modelName
+  baseUrl
 ) {
   const match = SEARCH_SIGNAL_RE.exec(modelResponse.trim());
   if (!match) return modelResponse;
 
   const query = match[1].trim();
-  logger.info(`Search signal detected: "${query}" (model: ${modelName})`);
+  logger.info(`Search signal detected: "${query}" (url: ${baseUrl})`);
 
-  // 1. Generate a "I'm searching for X" message using the same model
+  // 1. Generate a "I'm searching for X" message using the same endpoint
   const searchAckMessages = [
     ...messages,
     {
@@ -278,7 +258,7 @@ async function handleSearchSignal(
     },
   ];
 
-  const searchAck = await ollamaChat(baseUrl, modelName, searchAckMessages);
+  const searchAck = await llamaChat(baseUrl, searchAckMessages);
   await sendChunked(message, searchAck);
 
   // 2. Run the SearXNG query
@@ -296,7 +276,7 @@ async function handleSearchSignal(
     { role: "system", content: searchResults },
   ];
 
-  const finalResponse = await ollamaChat(baseUrl, modelName, messagesWithResults);
+  const finalResponse = await llamaChat(baseUrl, messagesWithResults);
   return finalResponse;
 }
 
@@ -317,14 +297,11 @@ export async function handleForcedSearch(message, query) {
   );
 
   try {
-    // Pick the model based on current routing state
+    // Pick the endpoint based on current routing state
     const useLocal = isLocalAvailable();
     const baseUrl = useLocal
-      ? config.ollama.localBaseUrl
-      : config.ollama.vpsBaseUrl;
-    const modelName = useLocal
-      ? config.ollama.localModelCommon
-      : config.ollama.vpsModel;
+      ? config.llama.localLlamaUrl
+      : config.llama.vpsUrl;
 
     if (useLocal) {
       await switchToCommon();
@@ -344,7 +321,7 @@ export async function handleForcedSearch(message, query) {
           "Match their capitalization style. Do not mention 'model' or 'AI'.",
       },
     ];
-    const searchAck = await ollamaChat(baseUrl, modelName, searchAckMessages);
+    const searchAck = await llamaChat(baseUrl, searchAckMessages);
     await sendChunked(message, searchAck);
 
     // Run search
@@ -363,7 +340,7 @@ export async function handleForcedSearch(message, query) {
       { role: "system", content: searchResults },
     ];
 
-    const finalResponse = await ollamaChat(baseUrl, modelName, messagesWithResults);
+    const finalResponse = await llamaChat(baseUrl, messagesWithResults);
     await sendChunked(message, finalResponse);
 
     // Persist to history

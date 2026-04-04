@@ -3,10 +3,11 @@ import { logger } from "./logger.js";
 import { createBot } from "./bot.js";
 
 logger.info("Starting discord-llm-bot...");
-logger.info(`VPS Ollama: ${config.ollama.vpsBaseUrl} (model: ${config.ollama.vpsModel})`);
-logger.info(`Local Ollama: ${config.ollama.localBaseUrl}`);
-logger.info(`  Common model: ${config.ollama.localModelCommon}`);
-logger.info(`  Heavy model:  ${config.ollama.localModelHeavy}`);
+logger.info(`VPS llama-server: ${config.llama.vpsUrl} (model: ${config.llama.vpsModelFile})`);
+logger.info(`Local agent: ${config.llama.agentUrl || "(not configured)"}`);
+logger.info(`Local llama-server: ${config.llama.localLlamaUrl || "(not configured)"}`);
+logger.info(`  Common model: ${config.llama.localModelCommonFile || "(not configured)"}`);
+logger.info(`  Heavy model:  ${config.llama.localModelHeavyFile || "(not configured)"}`);
 
 const client = createBot();
 

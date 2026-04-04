@@ -32,12 +32,23 @@ export const config = {
       .map((s) => s.trim())
       .filter(Boolean),
   },
-  ollama: {
-    vpsBaseUrl: optional("VPS_OLLAMA_BASE_URL", "http://localhost:11434"),
-    localBaseUrl: required("LOCAL_OLLAMA_BASE_URL"),
-    vpsModel: optional("VPS_MODEL", "phi4-mini"),
-    localModelCommon: required("LOCAL_MODEL_COMMON"),
-    localModelHeavy: required("LOCAL_MODEL_HEAVY"),
+  llama: {
+    // VPS llama-server — always on, always available (Model 1 / fallback)
+    vpsUrl: optional("VPS_LLAMA_URL", "http://localhost:8080/v1"),
+    vpsModelFile: optional("VPS_MODEL_FILE", "phi4-mini.Q4_K_M.gguf"),
+
+    // Local llama-server — via Tailscale, managed by the local agent
+    localLlamaUrl: optional("LOCAL_LLAMA_URL", ""),
+
+    // Windows local agent — manages llama-server process
+    agentUrl: optional("LOCAL_AGENT_URL", ""),
+    agentToken: optional("LOCAL_AGENT_TOKEN", ""),
+
+    // Local model filenames (passed to agent to load into llama-server)
+    localModelCommonFile: optional("LOCAL_MODEL_COMMON_FILE", ""),
+    localModelHeavyFile: optional("LOCAL_MODEL_HEAVY_FILE", ""),
+
+    // Inference parameters
     temperature: parseFloat(optional("LLM_TEMPERATURE", "0.8")),
     topP: parseFloat(optional("LLM_TOP_P", "0.95")),
     topK: parseInt(optional("LLM_TOP_K", "40"), 10),

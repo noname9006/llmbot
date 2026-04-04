@@ -1,6 +1,6 @@
 import { historyService } from "../services/historyService.js";
-import { isLocalAvailable } from "../services/availabilityService.js";
-import { getActiveLocalModel } from "../services/modelManager.js";
+import { isLocalAvailable } from "../services/localAvailabilityService.js";
+import { getActiveLocalModel } from "../services/agentService.js";
 import { handleForcedSearch } from "./messageHandler.js";
 import { logger } from "../logger.js";
 
@@ -36,8 +36,8 @@ export async function handleCommand(message, _client) {
       const historyCount = historyService.size;
 
       const modelLine = localOnline
-        ? `🟢 Local Ollama **online** (active model: **${activeModel ?? "none"}**)`
-        : `🔴 Local Ollama **offline** — using VPS fallback model`;
+        ? `🟢 Local agent **online** (active model: **${activeModel ?? "none"}**)`
+        : `🔴 Local agent **offline** — using VPS fallback model`;
 
       return [
         modelLine,
@@ -62,7 +62,7 @@ export async function handleCommand(message, _client) {
       return [
         "**Available commands:**",
         "`!reset` — Clear your conversation history",
-        "`!status` — Check Ollama availability and active model",
+        "`!status` — Check local agent availability and active model",
         "`!search <query>` — Force a web search via SearXNG",
         "`!help` — Show this message",
         "",

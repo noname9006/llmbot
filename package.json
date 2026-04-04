@@ -1,7 +1,7 @@
 {
   "name": "discord-llm-bot",
   "version": "2.0.0",
-  "description": "Discord bot powered by Ollama (three-model architecture with intelligent routing)",
+  "description": "Discord bot powered by llama-server (three-model architecture with intelligent routing)",
   "main": "src/index.js",
   "type": "module",
   "scripts": {
