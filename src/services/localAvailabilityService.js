@@ -1,14 +1,21 @@
 import { config } from "../config.js";
 import { logger } from "../logger.js";
+import { resetActiveModelOnReconnect } from "./agentService.js";
+
+// ── Agent availability ────────────────────────────────────────────────────────
 
 let isAgentOnline = false;
-let pollTimer = null;
+let agentPollTimer = null;
+/** Timestamp (ms) when the agent last went offline, or null if currently online */
+let agentOfflineSince = null;
+/** Timestamp (ms) when the agent last came online, or null if currently offline */
+let agentOnlineSince = null;
 
 /**
  * Performs a single health check against the local agent.
  * Updates the cached state and logs any transitions.
  */
-async function poll() {
+async function pollAgent() {
   const wasOnline = isAgentOnline;
   const { agentUrl, agentToken } = config.llama;
 
@@ -30,25 +37,36 @@ async function poll() {
 
   if (wasOnline !== isAgentOnline) {
     if (isAgentOnline) {
+      agentOnlineSince = Date.now();
+      agentOfflineSince = null;
       logger.info("Local agent: offline → online");
+      // Reset cached model state so the next request triggers a fresh /start
+      resetActiveModelOnReconnect();
     } else {
+      agentOfflineSince = Date.now();
+      agentOnlineSince = null;
       logger.info("Local agent: online → offline");
     }
   }
 }
 
 /**
- * Starts the polling loop. Runs an immediate poll, then continues on interval.
+ * Starts the agent and VPS polling loops.
  * Safe to call multiple times — subsequent calls are no-ops.
  */
 export function startPolling() {
-  if (pollTimer !== null) return;
+  if (agentPollTimer !== null) return;
 
   // Immediate first poll
-  poll().catch((err) => logger.warn("Availability poll error:", err.message));
+  pollAgent().catch((err) => logger.warn("Agent availability poll error:", err.message));
+  pollVps().catch((err) => logger.warn("VPS availability poll error:", err.message));
 
-  pollTimer = setInterval(() => {
-    poll().catch((err) => logger.warn("Availability poll error:", err.message));
+  agentPollTimer = setInterval(() => {
+    pollAgent().catch((err) => logger.warn("Agent availability poll error:", err.message));
+  }, config.availability.pollIntervalMs);
+
+  setInterval(() => {
+    pollVps().catch((err) => logger.warn("VPS availability poll error:", err.message));
   }, config.availability.pollIntervalMs);
 }
 
@@ -58,4 +76,61 @@ export function startPolling() {
  */
 export function isLocalAvailable() {
   return isAgentOnline;
+}
+
+/**
+ * Returns how long (in ms) the local agent has been offline, or 0 if online.
+ * @returns {number}
+ */
+export function agentOfflineDurationMs() {
+  if (isAgentOnline || agentOfflineSince === null) return 0;
+  return Date.now() - agentOfflineSince;
+}
+
+/**
+ * Returns how long (in ms) the local agent has been online, or 0 if offline.
+ * @returns {number}
+ */
+export function agentOnlineDurationMs() {
+  if (!isAgentOnline || agentOnlineSince === null) return 0;
+  return Date.now() - agentOnlineSince;
+}
+
+// ── VPS health ────────────────────────────────────────────────────────────────
+
+let isVpsOnline = false;
+
+async function pollVps() {
+  const vpsUrl = config.llama.vpsUrl;
+  if (!vpsUrl) {
+    isVpsOnline = false;
+    return;
+  }
+
+  const wasOnline = isVpsOnline;
+  try {
+    // /models is a lightweight OpenAI-compat liveness endpoint
+    const res = await fetch(`${vpsUrl}/models`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    isVpsOnline = res.ok;
+  } catch {
+    isVpsOnline = false;
+  }
+
+  if (wasOnline !== isVpsOnline) {
+    if (isVpsOnline) {
+      logger.info("VPS llama-server: offline → online");
+    } else {
+      logger.warn("VPS llama-server: online → offline (fallback route is down!)");
+    }
+  }
+}
+
+/**
+ * Returns the cached availability state of the VPS llama-server.
+ * @returns {boolean}
+ */
+export function isVpsAvailable() {
+  return isVpsOnline;
 }

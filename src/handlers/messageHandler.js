@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 import { historyService } from "../services/historyService.js";
@@ -11,12 +12,22 @@ import {
 } from "../services/agentService.js";
 import { search } from "../services/searchService.js";
 import { isCommand, handleCommand } from "./commandHandler.js";
+import { createRateLimiter, createSemaphore } from "../utils/rateLimiter.js";
 
 // Leave headroom for edits — Discord's hard limit is 2000 chars
 const STREAM_CHUNK_LIMIT = 1900;
 
 // Regex to detect search signal from any model
 const SEARCH_SIGNAL_RE = /^__SEARCH__:\s*(.+)$/s;
+
+// Per-user rate limiter
+const rateLimiter = createRateLimiter({
+  maxRequests: config.rateLimit.maxRequests,
+  windowMs: config.rateLimit.windowMs,
+});
+
+// Global concurrency semaphore — caps simultaneous LLM calls
+const semaphore = createSemaphore(config.rateLimit.maxConcurrent);
 
 /**
  * Called for every incoming message.
@@ -58,8 +69,20 @@ export async function onMessage(message, client) {
     return;
   }
 
+  // ── Per-user rate limit ─────────────────────────────────────────────────────
+  if (!rateLimiter.check(message.author.id)) {
+    const retryAfterSec = Math.ceil(rateLimiter.retryAfterMs(message.author.id) / 1000);
+    await message.reply(
+      `⏳ You're sending messages too fast. Please wait ${retryAfterSec}s before trying again.`
+    ).catch(() => {});
+    return;
+  }
+
+  // Assign a correlation ID for tracing this request through all log lines
+  const reqId = randomUUID().slice(0, 8);
+
   logger.info(
-    `[${message.author.tag}] in #${message.channel.name ?? message.channelId}: ${userText.slice(0, 80)}`
+    `[${reqId}] [${message.author.tag}] in #${message.channel.name ?? message.channelId}: ${userText.slice(0, 80)}`
   );
 
   // ── If Model 3 is loaded, reset its idle timer on every new message ────────
@@ -84,17 +107,23 @@ export async function onMessage(message, client) {
     ? [...messages, { role: "system", content: capReminder }]
     : messages;
 
+  // ── Acquire global concurrency slot ────────────────────────────────────────
+  await semaphore.acquire();
+
   try {
+    const done = logger.timer(`[${reqId}] full response`, "info");
     const fullResponse = await routeAndRespond(
+      reqId,
       message,
       messagesWithReminder,
       userText
     );
+    done();
 
     // Persist the assistant's reply to history (the final user-facing response)
     historyService.pushAssistant(message.author.id, fullResponse);
   } catch (err) {
-    logger.error("Error during LLM completion:", err);
+    logger.error(`[${reqId}] Error during LLM completion:`, err);
 
     const errorText =
       "⚠️ Something went wrong while contacting the LLM backend. " +
@@ -105,6 +134,7 @@ export async function onMessage(message, client) {
     // Roll back only the user message we pushed — leave prior history intact
     historyService.popLastUser(message.author.id);
   } finally {
+    semaphore.release();
     clearInterval(typingInterval);
   }
 }
@@ -115,17 +145,19 @@ export async function onMessage(message, client) {
  * Determines which model to use, handles escalation and search signals,
  * posts replies to Discord, and returns the final response text.
  *
+ * @param {string} reqId
  * @param {import("discord.js").Message} message
  * @param {Array<{role: string, content: string}>} messages
  * @param {string} userText  - original user text (for search forced commands)
  * @returns {Promise<string>}  the final assistant response that was shown to the user
  */
-async function routeAndRespond(message, messages, userText) {
+async function routeAndRespond(reqId, message, messages, userText) {
   if (!isLocalAvailable()) {
     // ── Route 1: local offline → use VPS Model 1 ───────────────────────────
-    logger.info("Local agent offline — using VPS model (Model 1)");
+    logger.info(`[${reqId}] Local agent offline — using VPS model (Model 1)`);
     const response = await llamaChat(config.llama.vpsUrl, messages);
     const finalResponse = await handleSearchSignal(
+      reqId,
       message,
       messages,
       response,
@@ -138,20 +170,21 @@ async function routeAndRespond(message, messages, userText) {
   // ── Route 2: local online → use Model 2 (common) ─────────────────────────
   await switchToCommon();
 
-  logger.info("Local agent online — using Model 2 (common)");
+  logger.info(`[${reqId}] Local agent online — using Model 2 (common)`);
   const model2Response = await llamaChat(config.llama.localLlamaUrl, messages);
 
   const trimmed = model2Response.trim();
 
   if (trimmed === "__ESCALATE__") {
     // ── Route 3: escalation → Model 3 ────────────────────────────────────
-    return await handleEscalation(message, messages);
+    return await handleEscalation(reqId, message, messages);
   }
 
   const searchMatch = SEARCH_SIGNAL_RE.exec(trimmed);
   if (searchMatch) {
     // ── Route 4: search signal from Model 2 ──────────────────────────────
     const finalResponse = await handleSearchSignal(
+      reqId,
       message,
       messages,
       model2Response,
@@ -168,8 +201,8 @@ async function routeAndRespond(message, messages, userText) {
 
 // ── Escalation flow ───────────────────────────────────────────────────────────
 
-async function handleEscalation(message, messages) {
-  logger.info("Model 2 escalated — switching to Model 3 (heavy)");
+async function handleEscalation(reqId, message, messages) {
+  logger.info(`[${reqId}] Model 2 escalated — switching to Model 3 (heavy)`);
 
   // 1. Ask Model 2 to generate a natural "I need more time" transition message
   const transitionMessages = [
@@ -206,6 +239,7 @@ async function handleEscalation(message, messages) {
   const searchMatch = SEARCH_SIGNAL_RE.exec(trimmedHeavy);
   if (searchMatch) {
     const finalResponse = await handleSearchSignal(
+      reqId,
       message,
       messages,
       heavyResponse,
@@ -227,23 +261,19 @@ async function handleEscalation(message, messages) {
  * Posts a "looking this up..." message, runs the search, injects results,
  * and returns the final model response (does NOT post it — caller does that).
  *
+ * @param {string} reqId
  * @param {import("discord.js").Message} message
  * @param {Array<{role: string, content: string}>} messages  - full history up to this point
  * @param {string} modelResponse  - the raw model response containing the search signal
  * @param {string} baseUrl
  * @returns {Promise<string>}  the final answer after search
  */
-async function handleSearchSignal(
-  message,
-  messages,
-  modelResponse,
-  baseUrl
-) {
+async function handleSearchSignal(reqId, message, messages, modelResponse, baseUrl) {
   const match = SEARCH_SIGNAL_RE.exec(modelResponse.trim());
   if (!match) return modelResponse;
 
   const query = match[1].trim();
-  logger.info(`Search signal detected: "${query}" (url: ${baseUrl})`);
+  logger.info(`[${reqId}] Search signal detected: "${query}" (url: ${baseUrl})`);
 
   // 1. Generate a "I'm searching for X" message using the same endpoint
   const searchAckMessages = [
@@ -266,7 +296,7 @@ async function handleSearchSignal(
   try {
     searchResults = await search(query);
   } catch (err) {
-    logger.error("Search failed:", err.message);
+    logger.error(`[${reqId}] Search failed:`, err);
     searchResults = `[Search results for "${query}":\nSearch unavailable — ${err.message}]`;
   }
 
@@ -288,7 +318,8 @@ async function handleSearchSignal(
  * @param {string} query
  */
 export async function handleForcedSearch(message, query) {
-  logger.info(`Forced search: "${query}"`);
+  const reqId = randomUUID().slice(0, 8);
+  logger.info(`[${reqId}] Forced search: "${query}"`);
 
   await message.channel.sendTyping();
   const typingInterval = setInterval(
@@ -296,6 +327,7 @@ export async function handleForcedSearch(message, query) {
     8_000
   );
 
+  await semaphore.acquire();
   try {
     // Pick the endpoint based on current routing state
     const useLocal = isLocalAvailable();
@@ -329,7 +361,7 @@ export async function handleForcedSearch(message, query) {
     try {
       searchResults = await search(query);
     } catch (err) {
-      logger.error("Forced search failed:", err.message);
+      logger.error(`[${reqId}] Forced search failed:`, err);
       searchResults = `[Search results for "${query}":\nSearch unavailable — ${err.message}]`;
     }
 
@@ -347,16 +379,25 @@ export async function handleForcedSearch(message, query) {
     historyService.pushUser(message.author.id, `!search ${query}`);
     historyService.pushAssistant(message.author.id, finalResponse);
   } catch (err) {
-    logger.error("Error during forced search:", err);
+    logger.error(`[${reqId}] Error during forced search:`, err);
     await message
       .reply("⚠️ Something went wrong during the search.")
       .catch(() => {});
   } finally {
+    semaphore.release();
     clearInterval(typingInterval);
   }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Exposes current semaphore stats for observability (used by !status).
+ * @returns {{ running: number, queued: number }}
+ */
+export function getSemaphoreStats() {
+  return { running: semaphore.running, queued: semaphore.queued };
+}
 
 /**
  * Sends text as one or more Discord messages, respecting the 2000-char limit.
@@ -372,7 +413,9 @@ async function sendChunked(message, text) {
   }
   await message.reply(chunks[0]);
   for (let i = 1; i < chunks.length; i++) {
-    await message.channel.send(chunks[i]);
+    await message.channel.send(chunks[i]).catch((err) => {
+      logger.warn(`sendChunked: failed to send chunk ${i + 1}/${chunks.length}: ${err.message}`);
+    });
   }
 }
 

@@ -19,9 +19,22 @@ const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
 const currentLevel = LEVELS[LOG_LEVEL] ?? LEVELS.info;
 
+function serializeArg(arg) {
+  if (arg instanceof Error) {
+    return arg.stack ? `${arg.message}\n${arg.stack}` : arg.message;
+  }
+  return arg;
+}
+
 function log(level, ...args) {
   if ((LEVELS[level] ?? 0) >= currentLevel) {
-    console.log(`[${new Date().toISOString()}] [${level.toUpperCase()}]`, ...args);
+    const prefix = `[${new Date().toISOString()}] [${level.toUpperCase()}]`;
+    const serialized = args.map(serializeArg);
+    if (level === "error") {
+      console.error(prefix, ...serialized);
+    } else {
+      console.log(prefix, ...serialized);
+    }
   }
 }
 
@@ -38,6 +51,11 @@ const logger = {
 let serverProcess = null;
 /** Filename of the currently loaded model, or null */
 let loadedModel = null;
+
+// Mutex — prevents concurrent /start requests from spawning multiple processes
+let startInProgress = false;
+/** @type {Array<{ resolve: () => void, reject: (e: Error) => void }>} */
+const startQueue = [];
 
 /**
  * Spawns llama-server with the given model file.
@@ -181,6 +199,9 @@ app.get("/health", (_req, res) => {
  *
  * Stops any running llama-server, then starts a new one with the requested
  * model.  Waits until the server is ready before responding.
+ *
+ * Concurrent /start requests are serialised by a mutex — only one start
+ * operation runs at a time; subsequent callers wait for it to complete.
  */
 app.post("/start", async (req, res) => {
   const modelFile = req.body?.model;
@@ -190,6 +211,19 @@ app.post("/start", async (req, res) => {
 
   logger.info(`/start requested: model="${modelFile}"`);
 
+  // ── Mutex: queue concurrent requests rather than spawning multiple processes ─
+  if (startInProgress) {
+    logger.info(`/start queued (another start is in progress): model="${modelFile}"`);
+    try {
+      await new Promise((resolve, reject) => startQueue.push({ resolve, reject }));
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+    // After the in-progress start finishes, just return the current state
+    return res.json({ status: "ok", model: loadedModel, port: LLAMA_SERVER_PORT });
+  }
+
+  startInProgress = true;
   try {
     // Stop any currently running server first
     if (serverProcess) {
@@ -199,11 +233,21 @@ app.post("/start", async (req, res) => {
 
     await startServer(modelFile);
     res.json({ status: "ok", model: modelFile, port: LLAMA_SERVER_PORT });
+
+    // Notify all queued callers that the start completed successfully
+    const pending = startQueue.splice(0);
+    for (const { resolve } of pending) resolve();
   } catch (err) {
-    logger.error("Failed to start llama-server:", err.message);
+    logger.error("Failed to start llama-server:", err);
     serverProcess = null;
     loadedModel = null;
     res.status(500).json({ error: err.message });
+
+    // Reject all queued callers with the same error
+    const pending = startQueue.splice(0);
+    for (const { reject } of pending) reject(err);
+  } finally {
+    startInProgress = false;
   }
 });
 

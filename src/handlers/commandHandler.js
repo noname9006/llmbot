@@ -1,7 +1,12 @@
 import { historyService } from "../services/historyService.js";
-import { isLocalAvailable } from "../services/localAvailabilityService.js";
+import {
+  isLocalAvailable,
+  isVpsAvailable,
+  agentOfflineDurationMs,
+  agentOnlineDurationMs,
+} from "../services/localAvailabilityService.js";
 import { getActiveLocalModel } from "../services/agentService.js";
-import { handleForcedSearch } from "./messageHandler.js";
+import { handleForcedSearch, getSemaphoreStats } from "./messageHandler.js";
 import { logger } from "../logger.js";
 
 /**
@@ -32,17 +37,38 @@ export async function handleCommand(message, _client) {
 
     case "status": {
       const localOnline = isLocalAvailable();
+      const vpsOnline = isVpsAvailable();
       const activeModel = getActiveLocalModel();
       const historyCount = historyService.size;
+      const { running, queued } = getSemaphoreStats();
 
       const modelLine = localOnline
         ? `🟢 Local agent **online** (active model: **${activeModel ?? "none"}**)`
         : `🔴 Local agent **offline** — using VPS fallback model`;
 
+      const durationMs = localOnline
+        ? agentOnlineDurationMs()
+        : agentOfflineDurationMs();
+      const durationLine =
+        durationMs > 0
+          ? `   ⏱ ${localOnline ? "Online" : "Offline"} for **${formatDuration(durationMs)}**`
+          : "";
+
+      const vpsLine = vpsOnline
+        ? "🟢 VPS llama-server **online**"
+        : "🔴 VPS llama-server **offline** ⚠️";
+
+      const concurrencyLine = `⚙️ LLM requests: **${running}** active, **${queued}** queued`;
+
       return [
         modelLine,
+        durationLine,
+        vpsLine,
+        concurrencyLine,
         `📊 Active user histories: **${historyCount}**`,
-      ].join("\n");
+      ]
+        .filter(Boolean)
+        .join("\n");
     }
 
     case "search": {
@@ -73,4 +99,21 @@ export async function handleCommand(message, _client) {
     default:
       return null;
   }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * Format a duration in ms as a human-readable string.
+ * @param {number} ms
+ * @returns {string}
+ */
+function formatDuration(ms) {
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
 }

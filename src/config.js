@@ -55,6 +55,8 @@ export const config = {
     minP: parseFloat(optional("LLM_MIN_P", "0.0")),
     repeatPenalty: parseFloat(optional("LLM_REPETITION_PENALTY", "1.1")),
     maxTokens: parseInt(optional("LLM_MAX_TOKENS", "2048"), 10),
+    // Timeout for a single LLM fetch request in ms (0 = no timeout)
+    fetchTimeoutMs: parseInt(optional("LLM_FETCH_TIMEOUT_MS", "120000"), 10),
   },
   llm: {
     systemPrompt: loadSystemPrompt(),
@@ -71,6 +73,21 @@ export const config = {
   },
   history: {
     maxPairs: parseInt(optional("HISTORY_MAX_PAIRS", "10"), 10),
+  },
+  rateLimit: {
+    // Per-user: max N requests per window
+    maxRequests: parseInt(optional("RATE_LIMIT_MAX_REQUESTS", "5"), 10),
+    windowMs: parseInt(optional("RATE_LIMIT_WINDOW_MS", "30000"), 10),
+    // Global: max simultaneous LLM calls in flight
+    maxConcurrent: parseInt(optional("MAX_CONCURRENT_REQUESTS", "5"), 10),
+  },
+  retry: {
+    maxAttempts: parseInt(optional("RETRY_MAX_ATTEMPTS", "3"), 10),
+    initialDelayMs: parseInt(optional("RETRY_INITIAL_DELAY_MS", "500"), 10),
+  },
+  health: {
+    // Set to a port number to expose a /health HTTP endpoint. 0 = disabled.
+    port: parseInt(optional("HEALTH_PORT", "0"), 10),
   },
   logLevel: optional("LOG_LEVEL", "info"),
 };
