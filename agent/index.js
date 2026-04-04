@@ -21,7 +21,7 @@ const currentLevel = LEVELS[LOG_LEVEL] ?? LEVELS.info;
 
 function serializeArg(arg) {
   if (arg instanceof Error) {
-    return arg.stack ? `${arg.message}\n${arg.stack}` : arg.message;
+    return arg.stack ?? arg.message;
   }
   return arg;
 }
@@ -154,7 +154,11 @@ function stopServer() {
 
     // Force-kill after 10 seconds if it hasn't exited
     setTimeout(() => {
-      try { proc.kill("SIGKILL"); } catch (err) { logger.debug(`SIGKILL failed (process likely already gone): ${err.message}`); }
+      try {
+        proc.kill("SIGKILL");
+      } catch (err) {
+        logger.debug(`SIGKILL failed (process likely already gone): ${err.message}`);
+      }
     }, 10_000);
   });
 }

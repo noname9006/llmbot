@@ -15,7 +15,7 @@ function timestamp() {
  */
 function serialize(arg) {
   if (arg instanceof Error) {
-    return arg.stack ? `${arg.message}\n${arg.stack}` : arg.message;
+    return arg.stack ?? arg.message;
   }
   return arg;
 }
