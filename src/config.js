@@ -32,18 +32,31 @@ export const config = {
       .map((s) => s.trim())
       .filter(Boolean),
   },
-  ollama: {
-    vpsBaseUrl: optional("VPS_OLLAMA_BASE_URL", "http://localhost:11434"),
-    localBaseUrl: required("LOCAL_OLLAMA_BASE_URL"),
-    vpsModel: optional("VPS_MODEL", "phi4-mini"),
-    localModelCommon: required("LOCAL_MODEL_COMMON"),
-    localModelHeavy: required("LOCAL_MODEL_HEAVY"),
+  llama: {
+    // VPS llama-server — always on, always available (Model 1 / fallback)
+    vpsUrl: optional("VPS_LLAMA_URL", "http://localhost:8080/v1"),
+    vpsModelFile: optional("VPS_MODEL_FILE", "phi4-mini.Q4_K_M.gguf"),
+
+    // Local llama-server — via Tailscale, managed by the local agent
+    localLlamaUrl: optional("LOCAL_LLAMA_URL", ""),
+
+    // Windows local agent — manages llama-server process
+    agentUrl: optional("LOCAL_AGENT_URL", ""),
+    agentToken: optional("LOCAL_AGENT_TOKEN", ""),
+
+    // Local model filenames (passed to agent to load into llama-server)
+    localModelCommonFile: optional("LOCAL_MODEL_COMMON_FILE", ""),
+    localModelHeavyFile: optional("LOCAL_MODEL_HEAVY_FILE", ""),
+
+    // Inference parameters
     temperature: parseFloat(optional("LLM_TEMPERATURE", "0.8")),
     topP: parseFloat(optional("LLM_TOP_P", "0.95")),
     topK: parseInt(optional("LLM_TOP_K", "40"), 10),
     minP: parseFloat(optional("LLM_MIN_P", "0.0")),
     repeatPenalty: parseFloat(optional("LLM_REPETITION_PENALTY", "1.1")),
     maxTokens: parseInt(optional("LLM_MAX_TOKENS", "2048"), 10),
+    // Timeout for a single LLM fetch request in ms (0 = no timeout)
+    fetchTimeoutMs: parseInt(optional("LLM_FETCH_TIMEOUT_MS", "120000"), 10),
   },
   llm: {
     systemPrompt: loadSystemPrompt(),
@@ -60,6 +73,23 @@ export const config = {
   },
   history: {
     maxPairs: parseInt(optional("HISTORY_MAX_PAIRS", "10"), 10),
+  },
+  rateLimit: {
+    // Per-user: max N requests per window
+    maxRequests: parseInt(optional("RATE_LIMIT_MAX_REQUESTS", "5"), 10),
+    windowMs: parseInt(optional("RATE_LIMIT_WINDOW_MS", "30000"), 10),
+    // Global: max simultaneous LLM calls in flight
+    maxConcurrent: parseInt(optional("MAX_CONCURRENT_REQUESTS", "5"), 10),
+  },
+  retry: {
+    maxAttempts: parseInt(optional("RETRY_MAX_ATTEMPTS", "3"), 10),
+    initialDelayMs: parseInt(optional("RETRY_INITIAL_DELAY_MS", "500"), 10),
+  },
+  health: {
+    // Set to a port number to expose a /health HTTP endpoint. 0 = disabled.
+    port: parseInt(optional("HEALTH_PORT", "0"), 10),
+    // Optional bearer token to protect the /health endpoint. Empty = no auth.
+    token: optional("HEALTH_TOKEN", ""),
   },
   logLevel: optional("LOG_LEVEL", "info"),
 };

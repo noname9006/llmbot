@@ -1,7 +1,11 @@
 import { historyService } from "../services/historyService.js";
-import { isLocalAvailable } from "../services/availabilityService.js";
-import { getActiveLocalModel } from "../services/modelManager.js";
-import { handleForcedSearch } from "./messageHandler.js";
+import {
+  isLocalAvailable,
+  isVpsAvailable,
+  agentOfflineDurationMs,
+  agentOnlineDurationMs,
+} from "../services/localAvailabilityService.js";
+import { getActiveLocalModel } from "../services/agentService.js";
 import { logger } from "../logger.js";
 
 /**
@@ -15,11 +19,16 @@ export function isCommand(content) {
 /**
  * Dispatches a command message and returns a reply string, or null if unknown.
  * For the !search command, sends its own replies and returns null.
+ *
  * @param {import("discord.js").Message} message
  * @param {import("discord.js").Client} _client
+ * @param {object} handlers  - injected to break the circular dependency with messageHandler
+ * @param {Function} handlers.handleForcedSearch
+ * @param {Function} handlers.getSemaphoreStats
  * @returns {Promise<string|null>}
  */
-export async function handleCommand(message, _client) {
+export async function handleCommand(message, _client, handlers = {}) {
+  const { handleForcedSearch, getSemaphoreStats } = handlers;
   const parts = message.content.trim().slice(1).split(/\s+/);
   const cmd = parts[0];
 
@@ -31,24 +40,53 @@ export async function handleCommand(message, _client) {
     }
 
     case "status": {
+      // Restrict to guild administrators to avoid leaking operational details
+      if (!message.guild || !message.member?.permissions.has("Administrator")) {
+        return "⛔ This command is only available to server administrators.";
+      }
+
       const localOnline = isLocalAvailable();
+      const vpsOnline = isVpsAvailable();
       const activeModel = getActiveLocalModel();
       const historyCount = historyService.size;
+      const { running, queued } = getSemaphoreStats();
 
       const modelLine = localOnline
-        ? `🟢 Local Ollama **online** (active model: **${activeModel ?? "none"}**)`
-        : `🔴 Local Ollama **offline** — using VPS fallback model`;
+        ? `🟢 Local agent **online** (active model: **${activeModel ?? "none"}**)`
+        : `🔴 Local agent **offline** — using VPS fallback model`;
+
+      const durationMs = localOnline
+        ? agentOnlineDurationMs()
+        : agentOfflineDurationMs();
+      const durationLine =
+        durationMs > 0
+          ? `   ⏱ ${localOnline ? "Online" : "Offline"} for **${formatDuration(durationMs)}**`
+          : "";
+
+      const vpsLine = vpsOnline
+        ? "🟢 VPS llama-server **online**"
+        : "🔴 VPS llama-server **offline** ⚠️";
+
+      const concurrencyLine = `⚙️ LLM requests: **${running}** active, **${queued}** queued`;
 
       return [
         modelLine,
+        durationLine,
+        vpsLine,
+        concurrencyLine,
         `📊 Active user histories: **${historyCount}**`,
-      ].join("\n");
+      ]
+        .filter(Boolean)
+        .join("\n");
     }
 
     case "search": {
       const query = parts.slice(1).join(" ").trim();
       if (!query) {
         return "Usage: `!search <query>`";
+      }
+      if (!handleForcedSearch) {
+        return "⚠️ Search handler is not available.";
       }
       // handleForcedSearch sends its own replies
       handleForcedSearch(message, query).catch((err) => {
@@ -62,7 +100,7 @@ export async function handleCommand(message, _client) {
       return [
         "**Available commands:**",
         "`!reset` — Clear your conversation history",
-        "`!status` — Check Ollama availability and active model",
+        "`!status` — Check local agent availability and active model",
         "`!search <query>` — Force a web search via SearXNG",
         "`!help` — Show this message",
         "",
@@ -73,4 +111,21 @@ export async function handleCommand(message, _client) {
     default:
       return null;
   }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * Format a duration in ms as a human-readable string.
+ * @param {number} ms
+ * @returns {string}
+ */
+function formatDuration(ms) {
+  const totalSec = Math.floor(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
 }

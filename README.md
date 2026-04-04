@@ -1,9 +1,59 @@
 # discord-llm-bot
 
-A Discord bot powered by LM Studio running on your local machine, bridged to a VPS via **FRP** (Fast Reverse Proxy).
+A Discord bot powered by **llama-server** (llama.cpp), using a three-model architecture. The VPS runs a lightweight fallback model; a Windows local machine with a GPU runs two additional models managed by a local agent over Tailscale.
+
+---
+
+## Architecture
 
 ```
-[Discord] ←→ [VPS: discord-llm-bot + frps] ←──FRP tunnel──→ [Local: LM Studio + frpc]
+[Discord]
+    ↕
+[VPS: Node.js bot (PM2)]
+    ├── HTTP → [VPS: llama-server :8080 (PM2, always on)]
+    │           /home/ubuntu/lllm/<VPS_MODEL_FILE>
+    └── HTTP → [Windows: local agent :3000 (Node.js)]
+                    ↑ Tailscale  (Authorization: Bearer token)
+                    └── spawns/kills → [llama-server :8081]
+                                        F:\AI\.models\<model>
+```
+
+### Routing logic
+
+1. **Local agent offline** → VPS llama-server (Model 1, always available)
+2. **Local agent online** → local llama-server with Model 2 (common)
+   - Model 2 replies `__ESCALATE__` → switch to Model 3 (heavy)
+   - Model 3 idles for 15 min → local llama-server is stopped automatically
+
+---
+
+## Repository structure
+
+```
+discord-llm-bot/
+├── src/
+│   ├── index.js                        # Entry point & graceful shutdown
+│   ├── bot.js                          # Discord client setup
+│   ├── config.js                       # Validated config from .env
+│   ├── logger.js                       # Leveled logger
+│   ├── handlers/
+│   │   ├── messageHandler.js           # @mention handler, routing, search
+│   │   └── commandHandler.js           # !reset, !status, !search, !help
+│   └── services/
+│       ├── llamaService.js             # OpenAI-compat client for llama-server
+│       ├── agentService.js             # HTTP client for Windows agent + model state
+│       ├── localAvailabilityService.js # Polls agent /health
+│       ├── searchService.js            # SearXNG client
+│       └── historyService.js           # Per-user conversation memory
+├── agent/
+│   ├── index.js                        # Windows local agent (Express)
+│   ├── package.json
+│   ├── .env.example
+│   └── README.md                       # Agent-specific setup guide
+├── .env.example
+├── ecosystem.config.js                 # PM2 config for the bot
+├── package.json
+└── sysprompt.txt                       # Default system prompt
 ```
 
 ---
@@ -12,8 +62,9 @@ A Discord bot powered by LM Studio running on your local machine, bridged to a V
 
 | Where | What |
 |-------|------|
-| VPS | Node.js ≥ 18, PM2, frp (`frps`) |
-| Local machine | LM Studio running on port `1234`, frp (`frpc`) |
+| VPS | Node.js ≥ 18, PM2, llama-server binary (AVX2 build), model file |
+| Windows machine | Node.js ≥ 18, llama-server (Vulkan build), model files, Tailscale |
+| Both | Tailscale installed and connected |
 
 ---
 
@@ -24,96 +75,77 @@ A Discord bot powered by LM Studio running on your local machine, bridged to a V
 3. **Bot** tab → **Add Bot** → copy the **Token**
 4. Under **Privileged Gateway Intents**, enable:
    - `MESSAGE CONTENT INTENT`
-   - `SERVER MEMBERS INTENT` (optional)
 5. **OAuth2 → URL Generator**: scopes `bot`, permissions:
-   - Read Messages/View Channels
-   - Send Messages
-   - Read Message History
-   - Mention Everyone (optional)
+   - Read Messages / View Channels, Send Messages, Read Message History
 6. Visit the generated URL to invite the bot to your server
 
 ---
 
-## 2. Set Up FRP Tunnel
+## 2. VPS — llama-server setup
 
-### On the VPS
-
-```bash
-# Download frp (adjust version/arch as needed)
-wget https://github.com/fatedier/frp/releases/download/v0.61.0/frp_0.61.0_linux_amd64.tar.gz
-tar -xzf frp_0.61.0_linux_amd64.tar.gz
-sudo cp frp_0.61.0_linux_amd64/frps /usr/local/bin/frps
-
-# Install config
-sudo mkdir -p /etc/frp
-sudo cp frp/frps.toml /etc/frp/frps.toml
-
-# Edit and set a strong secret token
-sudo nano /etc/frp/frps.toml
-
-# Install and start systemd service
-sudo cp frp/frps.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now frps
-
-# Open firewall ports
-sudo ufw allow 7000/tcp   # frp control port
-sudo ufw allow 7860/tcp   # forwarded LM Studio port (only needed locally on VPS)
-```
-
-### On your local machine
+llama-server runs as a **separate PM2 process** (not managed by the bot). It must be started before the bot.
 
 ```bash
-# Linux
-./frpc -c frp/frpc.toml
+# Download a pre-built AVX2 binary from the llama.cpp releases page
+# https://github.com/ggerganov/llama.cpp/releases
+# Look for: llama-<version>-bin-ubuntu-x64.zip or similar
 
-# Windows (PowerShell)
-.\frpc.exe -c frp\frpc.toml
+# Place your model file
+mkdir -p /home/ubuntu/lllm
+# copy your model: /home/ubuntu/lllm/phi4-mini.Q4_K_M.gguf
 
-# Or run silently in background on Windows
-Start-Process .\frpc.exe -ArgumentList "-c frp\frpc.toml" -WindowStyle Hidden
+# Start llama-server via PM2
+pm2 start --name llama-vps \
+  /path/to/llama-server \
+  -- \
+  --model /home/ubuntu/lllm/phi4-mini.Q4_K_M.gguf \
+  --port 8080 \
+  --host 127.0.0.1 \
+  -ngl 0          # CPU-only on most VPS instances
+
+pm2 save
 ```
 
-Edit `frp/frpc.toml` first:
-- Set `serverAddr` to your VPS public IP
-- Set the same `auth.token` as in `frps.toml`
+Verify it is running:
+```bash
+curl http://localhost:8080/health
+```
 
 ---
 
-## 3. Deploy the Bot on VPS
+## 3. Windows — local agent setup
+
+See [`agent/README.md`](agent/README.md) for full instructions.
+
+Short version:
+```powershell
+cd agent
+npm install
+copy .env.example .env
+# edit .env — set AGENT_TOKEN, paths, GPU layers
+node index.js
+```
+
+---
+
+## 4. Deploy the bot on VPS
 
 ```bash
-# Clone / copy project to VPS
 git clone <your-repo> discord-llm-bot
 cd discord-llm-bot
-
-# Install dependencies
 npm install
 
-# Configure environment
 cp .env.example .env
 nano .env
-# → Set DISCORD_TOKEN
-# → LLM_BASE_URL should be http://127.0.0.1:7860/v1
+# Set: DISCORD_TOKEN, VPS_LLAMA_URL, VPS_MODEL_FILE,
+#      LOCAL_AGENT_URL, LOCAL_AGENT_TOKEN,
+#      LOCAL_LLAMA_URL, LOCAL_MODEL_COMMON_FILE, LOCAL_MODEL_HEAVY_FILE
 
-# Create logs directory
 mkdir -p logs
-
-# Start with PM2
 pm2 start ecosystem.config.js
 pm2 save
-pm2 startup   # follow the printed command to auto-start on reboot
+pm2 startup   # follow the printed command to enable auto-start on reboot
 ```
-
----
-
-## 4. Configure LM Studio
-
-1. Open LM Studio on your local machine
-2. Load the model: `qwen3.5-prism-dynamic-quant`
-3. Go to **Local Server** tab (⚡ icon)
-4. Ensure it's listening on `127.0.0.1:1234`
-5. Click **Start Server**
 
 ---
 
@@ -121,52 +153,33 @@ pm2 startup   # follow the printed command to auto-start on reboot
 
 | Action | How |
 |--------|-----|
-| Chat with the bot | `@BotName your question here` |
-| Clear your history | `!reset` |
-| Check LLM backend status | `!status` |
+| Chat | `@BotName your question here` |
+| Clear history | `!reset` |
+| Check status | `!status` |
+| Force web search | `!search <query>` |
 | Show help | `!help` |
 
 ---
 
-## Configuration (`.env`)
+## Configuration (bot `.env`)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DISCORD_TOKEN` | *(required)* | Your bot token |
+| `DISCORD_TOKEN` | *(required)* | Discord bot token |
 | `ALLOWED_CHANNEL_IDS` | *(empty = all)* | Comma-separated channel IDs |
-| `LLM_BASE_URL` | `http://127.0.0.1:7860/v1` | FRP-forwarded LM Studio URL |
-| `LLM_MODEL` | `qwen3.5-prism-dynamic-quant` | Model identifier |
-| `SYSTEM_PROMPT` | see `.env.example` | System prompt for all conversations |
-| `LLM_MAX_TOKENS` | `1024` | Max tokens per reply (`0` = model default) |
-| `LLM_TEMPERATURE` | `0.7` | Temperature |
-| `HISTORY_MAX_PAIRS` | `10` | Max user+assistant pairs kept per user |
+| `VPS_LLAMA_URL` | `http://localhost:8080/v1` | VPS llama-server OpenAI-compat URL |
+| `VPS_MODEL_FILE` | `phi4-mini.Q4_K_M.gguf` | VPS model filename (for logging) |
+| `LOCAL_AGENT_URL` | *(empty)* | Windows agent URL (Tailscale) |
+| `LOCAL_AGENT_TOKEN` | *(empty)* | Bearer token for agent auth |
+| `LOCAL_LLAMA_URL` | *(empty)* | Local llama-server URL (Tailscale) |
+| `LOCAL_MODEL_COMMON_FILE` | *(empty)* | Common model filename |
+| `LOCAL_MODEL_HEAVY_FILE` | *(empty)* | Heavy model filename |
+| `LOCAL_HEALTH_POLL_INTERVAL_MS` | `30000` | Agent health poll interval |
+| `SEARXNG_BASE_URL` | *(empty)* | SearXNG instance URL |
+| `LLM_TEMPERATURE` | `0.8` | Sampling temperature |
+| `LLM_MAX_TOKENS` | `2048` | Max tokens per reply |
+| `HISTORY_MAX_PAIRS` | `10` | Conversation pairs kept per user |
 | `LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
-
----
-
-## Project Structure
-
-```
-discord-llm-bot/
-├── src/
-│   ├── index.js                  # Entry point & graceful shutdown
-│   ├── bot.js                    # Discord client setup
-│   ├── config.js                 # Validated config from .env
-│   ├── logger.js                 # Leveled logger
-│   ├── handlers/
-│   │   ├── messageHandler.js     # @mention handler + streaming
-│   │   └── commandHandler.js     # !reset, !status, !help
-│   └── services/
-│       ├── llmService.js         # OpenAI-compatible streaming client
-│       └── historyService.js     # Per-user conversation memory
-├── frp/
-│   ├── frps.toml                 # VPS: FRP server config
-│   ├── frpc.toml                 # Local: FRP client config
-│   └── frps.service              # Systemd unit for frps
-├── .env.example
-├── ecosystem.config.js           # PM2 process config
-└── package.json
-```
 
 ---
 
@@ -176,16 +189,16 @@ discord-llm-bot/
 - Check `pm2 logs discord-llm-bot`
 - Ensure `MESSAGE CONTENT INTENT` is enabled in the Discord developer portal
 
-**LLM backend unreachable**
+**VPS model unreachable**
+- `curl http://localhost:8080/health`
+- Check `pm2 logs llama-vps`
+
+**Local agent unreachable**
 - Run `!status` in Discord
-- On VPS: `curl http://127.0.0.1:7860/v1/models`
-- Check `frps` is running: `systemctl status frps`
-- Check `frpc` is running on local machine and connected
+- Check Tailscale is connected: `tailscale status`
+- Verify Windows Firewall allows port 3000 from Tailscale subnet
+- Check agent logs
 
-**Responses cut off**
-- Increase `LLM_MAX_TOKENS` or ask the bot to continue
-- Discord messages have a 2000-character hard limit
-
-**FRP tunnel drops**
-- frp auto-reconnects; check `frpc` logs for errors
-- Ensure VPS firewall allows port `7000` inbound
+**Model takes too long to load**
+- Large models can take 60-120 s on first load — this is normal
+- The bot keeps the Discord typing indicator alive during the wait
