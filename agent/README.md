@@ -50,7 +50,9 @@ Edit `.env`:
 - `AGENT_TOKEN` — set a strong random secret (must match `LOCAL_AGENT_TOKEN` in the bot's `.env`)
 - `LLAMA_SERVER_BIN` — full path to `llama-server.exe`
 - `LLAMA_MODEL_DIR` — directory containing your `.gguf` model files
-- `LLAMA_GPU_LAYERS` — `99` to offload all layers to the GPU (recommended for RX 6600 XT)
+- `LLAMA_GPU_LAYERS` — default layers to offload to GPU; `99` offloads all (recommended when the model fits in VRAM)
+- `LLAMA_GPU_LAYERS_COMMON` *(optional)* — per-model override for the "common" role; takes priority over `LLAMA_GPU_LAYERS` when the bot sends `"role": "common"` with `/start`
+- `LLAMA_GPU_LAYERS_HEAVY` *(optional)* — per-model override for the "heavy" role; takes priority over `LLAMA_GPU_LAYERS` when the bot sends `"role": "heavy"` with `/start`
 
 ### 3. Run the agent
 
@@ -86,8 +88,10 @@ Starts llama-server with the requested model. Stops any currently running instan
 
 **Request:**
 ```json
-{ "model": "some-model.Q4_K_M.gguf" }
+{ "model": "some-model.Q4_K_M.gguf", "role": "common" }
 ```
+
+The `role` field is optional (`"common"` or `"heavy"`). When provided, the agent uses `LLAMA_GPU_LAYERS_COMMON` or `LLAMA_GPU_LAYERS_HEAVY` (if set) instead of the default `LLAMA_GPU_LAYERS`.
 
 **Response (200):**
 ```json
@@ -139,5 +143,5 @@ New-NetFirewallRule -DisplayName "llmbot llama-server" `
 
 **GPU not used**
 - Confirm you're using a Vulkan build of llama-server
-- Check `LLAMA_GPU_LAYERS=99` is set
+- Check `LLAMA_GPU_LAYERS=99` is set (or use `LLAMA_GPU_LAYERS_COMMON` / `LLAMA_GPU_LAYERS_HEAVY` for per-model overrides)
 - Verify Vulkan drivers are installed: `vulkaninfo` in PowerShell
