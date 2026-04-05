@@ -283,7 +283,11 @@ app.post("/start", async (req, res) => {
 
   logger.info(`/start requested: model="${modelFile}"`);
 
-  const role = typeof req.body?.role === "string" ? req.body.role : "";
+  const rawRole = typeof req.body?.role === "string" ? req.body.role : "";
+  const role = (rawRole === "common" || rawRole === "heavy") ? rawRole : "";
+  if (rawRole && !role) {
+    logger.warn(`/start received unrecognized role "${rawRole}" — falling back to default GPU layers`);
+  }
 
   // ── Mutex: queue concurrent requests rather than spawning multiple processes ─
   if (startInProgress) {
