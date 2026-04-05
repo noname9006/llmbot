@@ -11,6 +11,8 @@ const LLAMA_SERVER_BIN = process.env.LLAMA_SERVER_BIN ?? "llama-server";
 const LLAMA_SERVER_PORT = parseInt(process.env.LLAMA_SERVER_PORT ?? "8081", 10);
 const LLAMA_MODEL_DIR = process.env.LLAMA_MODEL_DIR ?? ".";
 const LLAMA_GPU_LAYERS = process.env.LLAMA_GPU_LAYERS ?? "99";
+const LLAMA_GPU_LAYERS_COMMON = process.env.LLAMA_GPU_LAYERS_COMMON ?? "";
+const LLAMA_GPU_LAYERS_HEAVY  = process.env.LLAMA_GPU_LAYERS_HEAVY  ?? "";
 const LLAMA_CONTEXT_SIZE = process.env.LLAMA_CONTEXT_SIZE ?? "";
 const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
@@ -65,19 +67,25 @@ const startQueue = [];
  * @param {string} modelFile  - filename (e.g. "model.gguf") inside LLAMA_MODEL_DIR
  * @returns {Promise<void>}
  */
-function startServer(modelFile) {
+function startServer(modelFile, role = "") {
   return new Promise((resolve, reject) => {
     const modelPath = path.join(LLAMA_MODEL_DIR, modelFile);
+
+    let gpuLayers = LLAMA_GPU_LAYERS; // default fallback
+    if (role === "common" && LLAMA_GPU_LAYERS_COMMON) gpuLayers = LLAMA_GPU_LAYERS_COMMON;
+    if (role === "heavy"  && LLAMA_GPU_LAYERS_HEAVY)  gpuLayers = LLAMA_GPU_LAYERS_HEAVY;
+
     const args = [
       "--model", modelPath,
       "--port", String(LLAMA_SERVER_PORT),
       "--host", "0.0.0.0",
-      "-ngl", LLAMA_GPU_LAYERS,
+      "-ngl", gpuLayers,
     ];
     if (LLAMA_CONTEXT_SIZE) {
       args.push("--ctx-size", LLAMA_CONTEXT_SIZE);
     }
 
+    logger.info(`GPU layers: ${gpuLayers} (role: ${role || "default"})`);
     logger.info(`Spawning llama-server: ${LLAMA_SERVER_BIN} ${args.join(" ")}`);
 
     const proc = spawn(LLAMA_SERVER_BIN, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -275,6 +283,12 @@ app.post("/start", async (req, res) => {
 
   logger.info(`/start requested: model="${modelFile}"`);
 
+  const rawRole = typeof req.body?.role === "string" ? req.body.role : "";
+  const role = (rawRole === "common" || rawRole === "heavy") ? rawRole : "";
+  if (rawRole && !role) {
+    logger.warn(`/start received unrecognized role "${rawRole}" — falling back to default GPU layers`);
+  }
+
   // ── Mutex: queue concurrent requests rather than spawning multiple processes ─
   if (startInProgress) {
     logger.info(`/start queued (another start is in progress): model="${modelFile}"`);
@@ -295,7 +309,7 @@ app.post("/start", async (req, res) => {
       await stopServer();
     }
 
-    await startServer(modelFile);
+    await startServer(modelFile, role);
     res.json({ status: "ok", model: modelFile, port: LLAMA_SERVER_PORT });
 
     // Notify all queued callers that the start completed successfully
