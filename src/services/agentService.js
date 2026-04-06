@@ -131,7 +131,7 @@ export async function switchToCommon() {
     // Capture the promise reference so .finally only clears pendingSwitch if
     // it still refers to THIS promise — prevents stomping a new promise that
     // was assigned after resetActiveModelOnReconnect() ran concurrently.
-    const p = agentStart(config.llama.localModelCommonFile, "common")
+    const p = agentStart(config.llama.localModelCommonFile)
       .then(() => {
         if (generation === gen) activeLocalModel = "common";
         else logger.debug("switchToCommon: skipping stale state update (generation changed)");
@@ -171,7 +171,7 @@ export async function switchToHeavy() {
     const gen = generation; // capture before going async
     logger.debug("switchToHeavy: starting /start for heavy model");
     // Same reference-guard pattern as switchToCommon.
-    const p = agentStart(config.llama.localModelHeavyFile, "heavy")
+    const p = agentStart(config.llama.localModelHeavyFile)
       .then(() => {
         if (generation === gen) activeLocalModel = "heavy";
         else logger.debug("switchToHeavy: skipping stale state update (generation changed)");
@@ -234,11 +234,8 @@ export function clearHeavyIdleTimer() {
  *
  * @param {string} modelFile  - filename (e.g. "model.gguf"), looked up in the
  *                              agent's configured model directory
- * @param {string} [role]     - "common" | "heavy" — used by the agent to select
- *                              per-model GPU layer counts (LLAMA_GPU_LAYERS_COMMON /
- *                              LLAMA_GPU_LAYERS_HEAVY); defaults to "" (fallback)
  */
-async function agentStart(modelFile, role = "") {
+async function agentStart(modelFile) {
   const { agentUrl, agentToken } = config.llama;
   if (!agentUrl) {
     throw new Error("LOCAL_AGENT_URL is not configured");
@@ -260,7 +257,7 @@ async function agentStart(modelFile, role = "") {
         "Content-Type": "application/json",
         ...(agentToken ? { Authorization: `Bearer ${agentToken}` } : {}),
       },
-      body: JSON.stringify({ model: modelFile, role }),
+      body: JSON.stringify({ model: modelFile }),
       signal: AbortSignal.timeout(START_TIMEOUT_MS),
     });
 
