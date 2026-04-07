@@ -14,6 +14,7 @@ const LLAMA_GPU_LAYERS = process.env.LLAMA_GPU_LAYERS ?? "99";
 const LLAMA_GPU_LAYERS_COMMON = process.env.LLAMA_GPU_LAYERS_COMMON ?? "";
 const LLAMA_GPU_LAYERS_HEAVY  = process.env.LLAMA_GPU_LAYERS_HEAVY  ?? "";
 const LLAMA_CONTEXT_SIZE = process.env.LLAMA_CONTEXT_SIZE ?? "";
+const LLAMA_EXTRA_ARGS = process.env.LLAMA_EXTRA_ARGS ?? "";
 const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
 // ── Logger ───────────────────────────────────────────────────────────────────
@@ -83,6 +84,9 @@ function startServer(modelFile, role = "") {
     ];
     if (LLAMA_CONTEXT_SIZE) {
       args.push("--ctx-size", LLAMA_CONTEXT_SIZE);
+    }
+    if (LLAMA_EXTRA_ARGS) {
+      args.push(...LLAMA_EXTRA_ARGS.trim().split(/\s+/));
     }
 
     logger.info(`GPU layers: ${gpuLayers} (role: ${role || "default"})`);

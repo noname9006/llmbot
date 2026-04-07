@@ -31,7 +31,14 @@ async function pollAgent() {
       headers: agentToken ? { Authorization: `Bearer ${agentToken}` } : {},
       signal: AbortSignal.timeout(5000),
     });
-    isAgentOnline = res.ok;
+    if (res.ok) {
+      const data = await res.json();
+      // Consider local available only when llama-server is running with a model loaded.
+      // Agent /health returns: { status: "ok", running: boolean, model: string|null }
+      isAgentOnline = data.running === true && data.model !== null;
+    } else {
+      isAgentOnline = false;
+    }
   } catch {
     isAgentOnline = false;
   }
