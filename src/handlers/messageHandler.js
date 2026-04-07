@@ -503,7 +503,8 @@ async function sendChunked(message, text) {
 
 /**
  * Detects the capitalization style of the first word of `text` and returns
- * an ephemeral system-level reminder string, or `null` if the text is empty.
+ * an ephemeral system-level reminder string that covers both capitalization
+ * rules and the escalation check, or `null` if the text is empty.
  * @param {string} text
  * @returns {string|null}
  */
@@ -513,20 +514,25 @@ function buildCapReminder(text) {
 
   // Extract only the letters from the first word to determine its casing
   const letters = firstWord.replace(/[^A-Za-z]/g, "");
+
+  let capRule;
   if (!letters) {
     // First word has no letters at all — fall back to lowercase reminder
-    return "[CAPITALIZATION REMINDER: User's message is lowercase. Your response must be entirely lowercase.]";
+    capRule = "User's message is lowercase. Your response must be entirely lowercase.";
+  } else if (letters.length > 1 && letters === letters.toUpperCase()) {
+    capRule = "User's message is ALL CAPS. Your ENTIRE response must be ALL CAPS.";
+  } else if (letters[0] === letters[0].toUpperCase()) {
+    capRule =
+      "User's message starts with uppercase. Your response MUST start with an uppercase letter and use normal sentence capitalization.";
+  } else {
+    capRule =
+      "User's message is lowercase. Your response must be entirely lowercase.";
   }
 
-  if (letters.length > 1 && letters === letters.toUpperCase()) {
-    return "[CAPITALIZATION REMINDER: User's message is ALL CAPS. Your ENTIRE response must be ALL CAPS.]";
-  }
-
-  if (letters[0] === letters[0].toUpperCase()) {
-    return "[CAPITALIZATION REMINDER: User's message starts with uppercase. Your response MUST start with an uppercase letter and use normal sentence capitalization.]";
-  }
-
-  return "[CAPITALIZATION REMINDER: User's message is lowercase. Your response must be entirely lowercase.]";
+  return (
+    `[SYSTEM REMINDER — Capitalization: ${capRule}` +
+    ` | Escalation: if the question requires deep technical explanation, multi-step analysis, or detailed research, respond with ONLY the text __ESCALATE__ — nothing else.]`
+  );
 }
 
 /**
