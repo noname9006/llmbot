@@ -145,7 +145,7 @@ export async function onMessage(message, client) {
     // ── Inject ephemeral capitalization reminder ──────────────────────────────
     const capReminder = buildCapReminder(userText);
     const messagesWithReminder = capReminder
-      ? [...messages, { role: "system", content: capReminder }]
+      ? [...messages, { role: "user", content: capReminder }]
       : messages;
 
     const done = logger.timer(`[${reqId}] full response`, "info");
@@ -253,7 +253,7 @@ async function handleEscalation(reqId, message, messages) {
   const transitionMessages = [
     ...messages,
     {
-      role: "system",
+      role: "user",
       content:
         "You are about to hand off this question to a more powerful model. " +
         "Generate a short, natural, conversational message (1-2 sentences) " +
@@ -339,7 +339,7 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
   const searchAckMessages = [
     ...messages,
     {
-      role: "system",
+      role: "user",
       content:
         `The user asked something and you decided to search for: "${query}". ` +
         "Generate a brief, natural message (1 sentence) telling the user you're looking this up. " +
@@ -363,7 +363,7 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
   // 3. Inject search results and re-run the model
   const messagesWithResults = [
     ...messages,
-    { role: "system", content: searchResults },
+    { role: "user", content: searchResults },
   ];
 
   const finalResponse = await llamaChat(baseUrl, messagesWithResults);
@@ -428,7 +428,7 @@ export async function handleForcedSearch(message, query) {
     const searchAckMessages = [
       ...messages,
       {
-        role: "system",
+        role: "user",
         content:
           `The user issued a !search command for: "${safeQuery}". ` +
           "Generate a brief, natural message (1 sentence) telling the user you're looking this up. " +
@@ -451,7 +451,7 @@ export async function handleForcedSearch(message, query) {
     const messagesWithResults = [
       ...messages,
       { role: "user", content: `!search ${safeQuery}` },
-      { role: "system", content: searchResults },
+      { role: "user", content: searchResults },
     ];
 
     const finalResponse = await llamaChat(baseUrl, messagesWithResults);
