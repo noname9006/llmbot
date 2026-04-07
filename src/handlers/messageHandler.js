@@ -253,7 +253,9 @@ async function handleEscalation(reqId, message, messages) {
   const transitionMessages = [
     ...messages,
     {
-      role: "user", +
+      role: "user",
+      content:
+        "You are about to hand off this question to a more powerful model. " +
         "Generate a short, natural, conversational message (1-2 sentences) " +
         "telling the user you need more time to think about this specific question. " +
         "Reference what they asked. Sound human, match their capitalization style. " +
@@ -362,6 +364,9 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
   const messagesWithResults = [
     ...messages,
     { role: "user", content: searchResults },
+  ];
+
+  const finalResponse = await llamaChat(baseUrl, messagesWithResults);
 
   // Guard against the model returning another search signal — prevents the
   // raw __SEARCH__: string from leaking to the user as its final reply.
