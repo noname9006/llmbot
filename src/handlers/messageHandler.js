@@ -163,8 +163,7 @@ export async function onMessage(message, client) {
     logger.error(`[${reqId}] Error during LLM completion:`, err);
 
     const errorText =
-      "⚠️ Something went wrong while contacting the LLM backend. " +
-      "Make sure llama-server is running and accessible.";
+      "⚠️ I'm having trouble reaching the AI backend right now. Please try again in a moment.";
 
     await message.reply(errorText).catch(() => {});
 
@@ -177,6 +176,34 @@ export async function onMessage(message, client) {
 }
 
 // ── Core routing logic ────────────────────────────────────────────────────────
+
+/**
+ * Calls VPS model, guards against __ESCALATE__, handles search signal,
+ * posts the reply and returns the final response text.
+ * Used as a fallback whenever local llama-server is unreachable.
+ *
+ * @param {string} reqId
+ * @param {import("discord.js").Message} message
+ * @param {Array<{role: string, content: string}>} messages
+ * @returns {Promise<string>}
+ */
+async function fallbackToVps(reqId, message, messages) {
+  const response = await llamaChat(config.llama.vpsUrl, messages);
+  if (ESCALATE_SIGNAL_RE.test(response.trim())) {
+    logger.warn(`[${reqId}] VPS model emitted __ESCALATE__ — replacing with fallback`);
+    await sendChunked(message, MSG_VPS_ESCALATE_FALLBACK);
+    return MSG_VPS_ESCALATE_FALLBACK;
+  }
+  const finalResponse = await handleSearchSignal(
+    reqId,
+    message,
+    messages,
+    response,
+    config.llama.vpsUrl
+  );
+  await sendChunked(message, finalResponse);
+  return finalResponse;
+}
 
 /**
  * Determines which model to use, handles escalation and search signals,
@@ -192,30 +219,24 @@ async function routeAndRespond(reqId, message, messages, userText) {
   if (!isLocalAvailable()) {
     // ── Route 1: local offline → use VPS Model 1 ───────────────────────────
     logger.info(`[${reqId}] Local agent offline — using VPS model (Model 1)`);
-    const response = await llamaChat(config.llama.vpsUrl, messages);
-    // VPS model should never emit __ESCALATE__; if it does, replace with a
-    // safe fallback rather than leaking the raw signal string to the user.
-    if (ESCALATE_SIGNAL_RE.test(response.trim())) {
-      logger.warn(`[${reqId}] VPS model emitted __ESCALATE__ — replacing with fallback`);
-      await sendChunked(message, MSG_VPS_ESCALATE_FALLBACK);
-      return MSG_VPS_ESCALATE_FALLBACK;
-    }
-    const finalResponse = await handleSearchSignal(
-      reqId,
-      message,
-      messages,
-      response,
-      config.llama.vpsUrl
-    );
-    await sendChunked(message, finalResponse);
-    return finalResponse;
+    return await fallbackToVps(reqId, message, messages);
   }
 
   // ── Route 2: local online → use Model 2 (common) ─────────────────────────
-  await switchToCommon();
+  let model2Response;
+  try {
+    await switchToCommon();
 
-  logger.info(`[${reqId}] Local agent online — using Model 2 (common)`);
-  const model2Response = await llamaChat(config.llama.localLlamaUrl, messages);
+    logger.info(`[${reqId}] Local agent online — using Model 2 (common)`);
+    model2Response = await llamaChat(config.llama.localLlamaUrl, messages);
+  } catch (err) {
+    if (!err.statusCode || err.statusCode >= 500) {
+      // Network-level failure or 5xx — fall back to VPS
+      logger.warn(`[${reqId}] Local llama-server unreachable — falling back to VPS`);
+      return await fallbackToVps(reqId, message, messages);
+    }
+    throw err;
+  }
 
   const trimmed = model2Response.trim();
 
@@ -260,10 +281,20 @@ async function handleEscalation(reqId, message, messages) {
       "Just say you need to dig deeper, research it, think it through, etc."
   );
 
-  const transitionMsg = await llamaChat(
-    config.llama.localLlamaUrl,
-    transitionMessages
-  );
+  let transitionMsg;
+  try {
+    transitionMsg = await llamaChat(
+      config.llama.localLlamaUrl,
+      transitionMessages
+    );
+  } catch (err) {
+    if (!err.statusCode || err.statusCode >= 500) {
+      // Local model unreachable — fall back to VPS for the full response
+      logger.warn(`[${reqId}] Local llama-server unreachable during escalation — falling back to VPS`);
+      return await fallbackToVps(reqId, message, messages);
+    }
+    throw err;
+  }
 
   // 2. Switch to Model 3 BEFORE posting the transition message.
   //    If this fails it throws, the caller's catch block handles cleanup, and
@@ -274,7 +305,17 @@ async function handleEscalation(reqId, message, messages) {
   await sendChunked(message, transitionMsg);
 
   // 4. Run Model 3 with the full conversation history
-  const heavyResponse = await llamaChat(config.llama.localLlamaUrl, messages);
+  let heavyResponse;
+  try {
+    heavyResponse = await llamaChat(config.llama.localLlamaUrl, messages);
+  } catch (err) {
+    if (!err.statusCode || err.statusCode >= 500) {
+      // Heavy model unreachable — fall back to VPS
+      logger.warn(`[${reqId}] Local llama-server unreachable for Model 3 — falling back to VPS`);
+      return await fallbackToVps(reqId, message, messages);
+    }
+    throw err;
+  }
 
   const trimmedHeavy = heavyResponse.trim();
 
@@ -536,7 +577,7 @@ function buildCapReminder(text) {
   }
 
   return (
-    `[SYSTEM REMINDER — Capitalization: ${capRule}` +
+    `[Reminder — Capitalization: ${capRule}` +
     ` | Escalation: if the question requires deep technical explanation, multi-step analysis, or detailed research, respond with ONLY the text __ESCALATE__ — nothing else.]`
   );
 }
