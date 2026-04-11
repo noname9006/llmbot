@@ -66,8 +66,21 @@ export async function llamaChat(baseUrl, messages, opts = {}) {
         }
 
         const content = data?.choices?.[0]?.message?.content ?? "";
-        logger.debug(`llamaChat ← ${content.length} chars`);
-        return content.trim();
+
+        // 1. Strip <think>...</think> reasoning blocks (Qwen3.5 and other thinking models)
+        //    Handles empty blocks (<think>\n\n</think>) and non-empty ones.
+        //    The \s* after </think> eats the blank line that follows.
+        let sanitized = content.replace(/<think>[\s\S]*?<\/think>\s*/gi, "");
+
+        // 2. Cut off at [/response] stop token (some models self-insert this but don't stop)
+        //    Case-insensitive to handle [/RESPONSE] variants.
+        const stopIdx = sanitized.search(/\[\/response\]/i);
+        if (stopIdx !== -1) {
+          sanitized = sanitized.slice(0, stopIdx);
+        }
+
+        logger.debug(`llamaChat ← ${sanitized.length} chars`);
+        return sanitized.trim();
       },
       {
         maxAttempts: config.retry.maxAttempts,
