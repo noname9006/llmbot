@@ -15,6 +15,8 @@ const LLAMA_GPU_LAYERS_COMMON = process.env.LLAMA_GPU_LAYERS_COMMON ?? "";
 const LLAMA_GPU_LAYERS_HEAVY  = process.env.LLAMA_GPU_LAYERS_HEAVY  ?? "";
 const LLAMA_CONTEXT_SIZE = process.env.LLAMA_CONTEXT_SIZE ?? "";
 const LLAMA_EXTRA_ARGS = process.env.LLAMA_EXTRA_ARGS ?? "";
+const LLAMA_MODEL_AUTOSTART = process.env.LLAMA_MODEL_AUTOSTART ?? "";
+const LLAMA_MODEL_AUTOSTART_ROLE = process.env.LLAMA_MODEL_AUTOSTART_ROLE ?? "";
 const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
 // ── Logger ───────────────────────────────────────────────────────────────────
@@ -345,13 +347,53 @@ app.post("/stop", async (_req, res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   logger.info(`llmbot-agent listening on port ${PORT}`);
   logger.info(`llama-server binary: ${LLAMA_SERVER_BIN}`);
   logger.info(`Model directory:     ${LLAMA_MODEL_DIR}`);
   logger.info(`llama-server port:   ${LLAMA_SERVER_PORT}`);
   if (!AGENT_TOKEN) {
     logger.warn("AGENT_TOKEN is not set — agent is unprotected!");
+  }
+
+  if (LLAMA_MODEL_AUTOSTART) {
+    // ── Path-traversal guard (same check as POST /start) ─────────────────────
+    const resolvedAutoPath = path.resolve(LLAMA_MODEL_DIR, LLAMA_MODEL_AUTOSTART);
+    const resolvedModelDir = path.resolve(LLAMA_MODEL_DIR);
+    const relativeAutoPath = path.relative(resolvedModelDir, resolvedAutoPath);
+    if (relativeAutoPath.startsWith("..") || path.isAbsolute(relativeAutoPath)) {
+      logger.error(
+        `Auto-start rejected — invalid LLAMA_MODEL_AUTOSTART path: "${LLAMA_MODEL_AUTOSTART}"`
+      );
+    } else {
+      // ── Role sanitization (same check as POST /start) ───────────────────────
+      const rawAutoRole = LLAMA_MODEL_AUTOSTART_ROLE;
+      const autoRole =
+        rawAutoRole === "common" || rawAutoRole === "heavy" ? rawAutoRole : "";
+      if (rawAutoRole && !autoRole) {
+        logger.warn(
+          `Auto-start: unrecognized LLAMA_MODEL_AUTOSTART_ROLE "${rawAutoRole}" — falling back to default GPU layers`
+        );
+      }
+
+      // ── Hold the mutex so a concurrent POST /start is queued, not raced ────
+      logger.info(`Auto-starting model: ${LLAMA_MODEL_AUTOSTART}`);
+      startInProgress = true;
+      try {
+        await startServer(LLAMA_MODEL_AUTOSTART, autoRole);
+        logger.info(`Auto-start complete: ${LLAMA_MODEL_AUTOSTART}`);
+        const pending = startQueue.splice(0);
+        for (const { resolve } of pending) resolve();
+      } catch (err) {
+        logger.error(`Auto-start failed for ${LLAMA_MODEL_AUTOSTART}: ${err.message}`);
+        serverProcess = null;
+        loadedModel = null;
+        const pending = startQueue.splice(0);
+        for (const { reject } of pending) reject(err);
+      } finally {
+        startInProgress = false;
+      }
+    }
   }
 });
 
