@@ -33,9 +33,10 @@ async function pollAgent() {
     });
     if (res.ok) {
       const data = await res.json();
-      // Consider local available only when llama-server is running with a model loaded.
+      // Consider local available whenever the agent process is reachable and healthy.
+      // Model loading is handled on-demand by switchToCommon() / switchToHeavy().
       // Agent /health returns: { status: "ok", running: boolean, model: string|null }
-      isAgentOnline = data.running === true && data.model !== null;
+      isAgentOnline = data.status === "ok";
     } else {
       isAgentOnline = false;
     }
