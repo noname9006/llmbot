@@ -360,8 +360,8 @@ app.listen(PORT, async () => {
     // ── Path-traversal guard (same check as POST /start) ─────────────────────
     const resolvedAutoPath = path.resolve(LLAMA_MODEL_DIR, LLAMA_MODEL_AUTOSTART);
     const resolvedModelDir = path.resolve(LLAMA_MODEL_DIR);
-    const autoRel = path.relative(resolvedModelDir, resolvedAutoPath);
-    if (autoRel.startsWith("..") || path.isAbsolute(autoRel)) {
+    const relativeAutoPath = path.relative(resolvedModelDir, resolvedAutoPath);
+    if (relativeAutoPath.startsWith("..") || path.isAbsolute(relativeAutoPath)) {
       logger.error(
         `Auto-start rejected — invalid LLAMA_MODEL_AUTOSTART path: "${LLAMA_MODEL_AUTOSTART}"`
       );

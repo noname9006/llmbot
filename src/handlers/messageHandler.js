@@ -147,7 +147,7 @@ export async function onMessage(message, client) {
     // ends with a user message — trailing system messages are malformed in
     // most ChatML / llama.cpp templates and can confuse local models.
     const capReminder = buildCapReminder(userText);
-    const messagesWithReminder = capReminder
+    const messagesWithReminder = capReminder && messages.length > 0
       ? [
           ...messages.slice(0, -1),
           { role: "system", content: capReminder },
