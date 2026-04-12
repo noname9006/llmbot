@@ -145,7 +145,7 @@ export async function onMessage(message, client) {
     // ── Inject ephemeral capitalization reminder ──────────────────────────────
     const capReminder = buildCapReminder(userText);
     const messagesWithReminder = capReminder
-      ? mergeIntoLastUser(messages, capReminder)
+      ? [...messages, { role: "user", content: capReminder }]
       : messages;
 
     const done = logger.timer(`[${reqId}] full response`, "info");
@@ -250,15 +250,19 @@ async function handleEscalation(reqId, message, messages) {
 
   // 1. Ask Model 2 to generate a "I need more time" transition message BEFORE
   //    switching away from it (Model 2 won't be available after switchToHeavy).
-  const transitionMessages = mergeIntoLastUser(
-    messages,
-    "You are about to hand off this question to a more powerful model. " +
-      "Generate a short, natural, conversational message (1-2 sentences) " +
-      "telling the user you need more time to think about this specific question. " +
-      "Reference what they asked. Sound human, match their capitalization style. " +
-      "Do not mention \"model\" or \"AI\". " +
-      "Just say you need to dig deeper, research it, think it through, etc."
-  );
+  const transitionMessages = [
+    ...messages,
+    {
+      role: "user",
+      content:
+        "You are about to hand off this question to a more powerful model. " +
+        "Generate a short, natural, conversational message (1-2 sentences) " +
+        "telling the user you need more time to think about this specific question. " +
+        "Reference what they asked. Sound human, match their capitalization style. " +
+        "Do not mention \"model\" or \"AI\". " +
+        "Just say you need to dig deeper, research it, think it through, etc.",
+    },
+  ];
 
   const transitionMsg = await llamaChat(
     config.llama.localLlamaUrl,
@@ -332,13 +336,17 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
   logger.info(`[${reqId}] Search signal detected: "${query}" (url: ${baseUrl})`);
 
   // 1. Generate a "I'm searching for X" message using the same endpoint
-  const searchAckMessages = mergeIntoLastUser(
-    messages,
-    `The user asked something and you decided to search for: "${query}". ` +
-      "Generate a brief, natural message (1 sentence) telling the user you're looking this up. " +
-      "Reference what they asked. Match their capitalization style. " +
-      "Do not mention 'model' or 'AI'."
-  );
+  const searchAckMessages = [
+    ...messages,
+    {
+      role: "user",
+      content:
+        `The user asked something and you decided to search for: "${query}". ` +
+        "Generate a brief, natural message (1 sentence) telling the user you're looking this up. " +
+        "Reference what they asked. Match their capitalization style. " +
+        "Do not mention 'model' or 'AI'.",
+    },
+  ];
 
   const searchAck = await llamaChat(baseUrl, searchAckMessages);
   await sendChunked(message, searchAck);
@@ -353,7 +361,10 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
   }
 
   // 3. Inject search results and re-run the model
-  const messagesWithResults = mergeIntoLastUser(messages, searchResults);
+  const messagesWithResults = [
+    ...messages,
+    { role: "user", content: searchResults },
+  ];
 
   const finalResponse = await llamaChat(baseUrl, messagesWithResults);
 
@@ -414,12 +425,16 @@ export async function handleForcedSearch(message, query) {
     const messages = historyService.getMessages(message.author.id);
 
     // Post acknowledgement
-    const searchAckMessages = mergeIntoLastUser(
-      messages,
-      `The user issued a !search command for: "${safeQuery}". ` +
-        "Generate a brief, natural message (1 sentence) telling the user you're looking this up. " +
-        "Match their capitalization style. Do not mention 'model' or 'AI'."
-    );
+    const searchAckMessages = [
+      ...messages,
+      {
+        role: "user",
+        content:
+          `The user issued a !search command for: "${safeQuery}". ` +
+          "Generate a brief, natural message (1 sentence) telling the user you're looking this up. " +
+          "Match their capitalization style. Do not mention 'model' or 'AI'.",
+      },
+    ];
     const searchAck = await llamaChat(baseUrl, searchAckMessages);
     await sendChunked(message, searchAck);
 
@@ -433,10 +448,11 @@ export async function handleForcedSearch(message, query) {
     }
 
     // Re-run model with results
-    const messagesWithResults = mergeIntoLastUser(
-      messages,
-      `!search ${safeQuery}\n\n${searchResults}`
-    );
+    const messagesWithResults = [
+      ...messages,
+      { role: "user", content: `!search ${safeQuery}` },
+      { role: "user", content: searchResults },
+    ];
 
     const finalResponse = await llamaChat(baseUrl, messagesWithResults);
     await sendChunked(message, finalResponse);
@@ -456,28 +472,6 @@ export async function handleForcedSearch(message, query) {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * Appends `extraContent` to the last user message in `messages`.
- * If the last message is not a user message, appends a new user message as
- * a safe fallback (this should not happen in normal flow).
- * @param {Array<{role: string, content: string}>} messages
- * @param {string} extraContent
- * @returns {Array<{role: string, content: string}>}
- */
-function mergeIntoLastUser(messages, extraContent) {
-  const last = messages[messages.length - 1];
-  if (last && last.role === "user") {
-    return [
-      ...messages.slice(0, -1),
-      { role: "user", content: last.content + "\n\n" + extraContent },
-    ];
-  }
-  // Fallback: last message is not a user message — append as new user message.
-  // This should not occur in normal flow; log a warning to aid debugging.
-  logger.warn("mergeIntoLastUser: last message is not a user message — appending as new user message");
-  return [...messages, { role: "user", content: extraContent }];
-}
 
 /**
  * Exposes current semaphore stats for observability (used by !status).
