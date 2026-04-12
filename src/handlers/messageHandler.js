@@ -143,9 +143,16 @@ export async function onMessage(message, client) {
     const messages = historyService.getMessages(message.author.id);
 
     // ── Inject ephemeral capitalization reminder ──────────────────────────────
+    // The reminder must sit BEFORE the final user turn so the chat template
+    // ends with a user message — trailing system messages are malformed in
+    // most ChatML / llama.cpp templates and can confuse local models.
     const capReminder = buildCapReminder(userText);
     const messagesWithReminder = capReminder
-      ? [...messages, { role: "system", content: capReminder }]
+      ? [
+          ...messages.slice(0, -1),
+          { role: "system", content: capReminder },
+          messages[messages.length - 1],
+        ]
       : messages;
 
     const done = logger.timer(`[${reqId}] full response`, "info");
