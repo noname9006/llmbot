@@ -145,7 +145,7 @@ export async function onMessage(message, client) {
     // ── Inject ephemeral capitalization reminder ──────────────────────────────
     const capReminder = buildCapReminder(userText);
     const messagesWithReminder = capReminder
-      ? [...messages, { role: "user", content: capReminder }]
+      ? [...messages, { role: "system", content: capReminder }]
       : messages;
 
     const done = logger.timer(`[${reqId}] full response`, "info");
@@ -530,8 +530,8 @@ function buildCapReminder(text) {
   }
 
   return (
-    `[SYSTEM REMINDER — Capitalization: ${capRule}` +
-    ` | Escalation: if the question requires deep technical explanation, multi-step analysis, or detailed research, respond with ONLY the text __ESCALATE__ — nothing else.]`
+    `Capitalization rule: ${capRule}` +
+    ` Escalation rule: if the question requires deep technical explanation, multi-step analysis, or detailed research, respond with ONLY the text __ESCALATE__ — nothing else.`
   );
 }
 

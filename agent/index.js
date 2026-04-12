@@ -15,6 +15,8 @@ const LLAMA_GPU_LAYERS_COMMON = process.env.LLAMA_GPU_LAYERS_COMMON ?? "";
 const LLAMA_GPU_LAYERS_HEAVY  = process.env.LLAMA_GPU_LAYERS_HEAVY  ?? "";
 const LLAMA_CONTEXT_SIZE = process.env.LLAMA_CONTEXT_SIZE ?? "";
 const LLAMA_EXTRA_ARGS = process.env.LLAMA_EXTRA_ARGS ?? "";
+const LLAMA_MODEL_AUTOSTART = process.env.LLAMA_MODEL_AUTOSTART ?? "";
+const LLAMA_MODEL_AUTOSTART_ROLE = process.env.LLAMA_MODEL_AUTOSTART_ROLE ?? "";
 const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
 // ── Logger ───────────────────────────────────────────────────────────────────
@@ -345,13 +347,23 @@ app.post("/stop", async (_req, res) => {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   logger.info(`llmbot-agent listening on port ${PORT}`);
   logger.info(`llama-server binary: ${LLAMA_SERVER_BIN}`);
   logger.info(`Model directory:     ${LLAMA_MODEL_DIR}`);
   logger.info(`llama-server port:   ${LLAMA_SERVER_PORT}`);
   if (!AGENT_TOKEN) {
     logger.warn("AGENT_TOKEN is not set — agent is unprotected!");
+  }
+
+  if (LLAMA_MODEL_AUTOSTART) {
+    logger.info(`Auto-starting model: ${LLAMA_MODEL_AUTOSTART}`);
+    try {
+      await startServer(LLAMA_MODEL_AUTOSTART, LLAMA_MODEL_AUTOSTART_ROLE);
+      logger.info(`Auto-start complete: ${LLAMA_MODEL_AUTOSTART}`);
+    } catch (err) {
+      logger.error(`Auto-start failed for ${LLAMA_MODEL_AUTOSTART}: ${err.message}`);
+    }
   }
 });
 
