@@ -19,12 +19,6 @@ export async function llamaChat(baseUrl, messages, opts = {}) {
   const body = {
     messages,
     stream: false,
-    temperature: config.llama.temperature,
-    top_p: config.llama.topP,
-    top_k: config.llama.topK,
-    min_p: config.llama.minP,
-    repeat_penalty: config.llama.repeatPenalty,
-    max_tokens: config.llama.maxTokens > 0 ? config.llama.maxTokens : -1,
     ...bodyOpts,
   };
 
