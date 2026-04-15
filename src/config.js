@@ -52,7 +52,9 @@ const _llamaGlobals = {
   topP:          parseFloat(optional("LLM_TOP_P",              "0.95")),
   topK:          parseInt(  optional("LLM_TOP_K",              "40"),   10),
   minP:          parseFloat(optional("LLM_MIN_P",              "0.0")),
-  repeatPenalty: parseFloat(optional("LLM_REPETITION_PENALTY", "1.1")),
+  repeatPenalty: parseFloat(
+    optional("LLM_REPEAT_PENALTY", optional("LLM_REPETITION_PENALTY", "1.1"))
+  ),
   maxTokens:     parseInt(  optional("LLM_MAX_TOKENS",         "2048"), 10),
 };
 

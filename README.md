@@ -190,8 +190,8 @@ Each global parameter has per-model overrides (`_VPS`, `_COMMON`, `_HEAVY`). Per
 | `LLM_TOP_K_COMMON` / `_HEAVY` / `_VPS` | *(falls back to `LLM_TOP_K`)* | Per-model top-k override |
 | `LLM_MIN_P` | `0.0` | Min-p sampling threshold |
 | `LLM_MIN_P_COMMON` / `_HEAVY` / `_VPS` | *(falls back to `LLM_MIN_P`)* | Per-model min-p override |
-| `LLM_REPETITION_PENALTY` | `1.1` | Repetition penalty. Gemma 4 recommended: `1.0` (disabled) |
-| `LLM_REPEAT_PENALTY_COMMON` / `_HEAVY` / `_VPS` | *(falls back to `LLM_REPETITION_PENALTY`)* | Per-model repetition penalty override |
+| `LLM_REPEAT_PENALTY` | `1.1` | Repetition penalty. Gemma 4 recommended: `1.0` (disabled). Old name `LLM_REPETITION_PENALTY` still accepted. |
+| `LLM_REPEAT_PENALTY_COMMON` / `_HEAVY` / `_VPS` | *(falls back to `LLM_REPEAT_PENALTY`)* | Per-model repetition penalty override |
 | `LLM_MAX_TOKENS` | `2048` | Max tokens per response (`-1` = unlimited) |
 | `LLM_MAX_TOKENS_COMMON` / `_HEAVY` / `_VPS` | *(falls back to `LLM_MAX_TOKENS`)* | Per-model max tokens override |
 
@@ -250,7 +250,7 @@ Key points for running Gemma 4 with this bot:
   LLM_TEMPERATURE=1.0
   LLM_TOP_P=0.95
   LLM_TOP_K=64
-  LLM_REPETITION_PENALTY=1.0
+  LLM_REPEAT_PENALTY=1.0
   ```
 - **VPS model** can be a different, smaller/faster model (e.g. a compact quantised model) — it does not need to be Gemma 4.
 
