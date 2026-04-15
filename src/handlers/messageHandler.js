@@ -192,7 +192,7 @@ async function routeAndRespond(reqId, message, messages, userText) {
   if (!isLocalAvailable()) {
     // ── Route 1: local offline → use VPS Model 1 ───────────────────────────
     logger.info(`[${reqId}] Local agent offline — using VPS model (Model 1)`);
-    const response = await llamaChat(config.llama.vpsUrl, messages);
+    const response = stripThinkBlock(await llamaChat(config.llama.vpsUrl, messages));
     // VPS model should never emit __ESCALATE__; if it does, replace with a
     // safe fallback rather than leaking the raw signal string to the user.
     if (ESCALATE_SIGNAL_RE.test(response.trim())) {
@@ -215,7 +215,7 @@ async function routeAndRespond(reqId, message, messages, userText) {
   await switchToCommon();
 
   logger.info(`[${reqId}] Local agent online — using Model 2 (common)`);
-  const model2Response = await llamaChat(config.llama.localLlamaUrl, messages);
+  const model2Response = stripThinkBlock(await llamaChat(config.llama.localLlamaUrl, messages));
 
   const trimmed = model2Response.trim();
 
@@ -264,10 +264,10 @@ async function handleEscalation(reqId, message, messages) {
     },
   ];
 
-  const transitionMsg = await llamaChat(
+  const transitionMsg = stripThinkBlock(await llamaChat(
     config.llama.localLlamaUrl,
     transitionMessages
-  );
+  ));
 
   // 2. Switch to Model 3 BEFORE posting the transition message.
   //    If this fails it throws, the caller's catch block handles cleanup, and
@@ -278,7 +278,7 @@ async function handleEscalation(reqId, message, messages) {
   await sendChunked(message, transitionMsg);
 
   // 4. Run Model 3 with the full conversation history
-  const heavyResponse = await llamaChat(config.llama.localLlamaUrl, messages);
+  const heavyResponse = stripThinkBlock(await llamaChat(config.llama.localLlamaUrl, messages));
 
   const trimmedHeavy = heavyResponse.trim();
 
@@ -348,7 +348,7 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
     },
   ];
 
-  const searchAck = await llamaChat(baseUrl, searchAckMessages);
+  const searchAck = stripThinkBlock(await llamaChat(baseUrl, searchAckMessages));
   await sendChunked(message, searchAck);
 
   // 2. Run the SearXNG query
@@ -366,7 +366,7 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
     { role: "user", content: searchResults },
   ];
 
-  const finalResponse = await llamaChat(baseUrl, messagesWithResults);
+  const finalResponse = stripThinkBlock(await llamaChat(baseUrl, messagesWithResults));
 
   // Guard against the model returning another search signal — prevents the
   // raw __SEARCH__: string from leaking to the user as its final reply.
@@ -435,7 +435,7 @@ export async function handleForcedSearch(message, query) {
           "Match their capitalization style. Do not mention 'model' or 'AI'.",
       },
     ];
-    const searchAck = await llamaChat(baseUrl, searchAckMessages);
+    const searchAck = stripThinkBlock(await llamaChat(baseUrl, searchAckMessages));
     await sendChunked(message, searchAck);
 
     // Run search
@@ -454,7 +454,7 @@ export async function handleForcedSearch(message, query) {
       { role: "user", content: searchResults },
     ];
 
-    const finalResponse = await llamaChat(baseUrl, messagesWithResults);
+    const finalResponse = stripThinkBlock(await llamaChat(baseUrl, messagesWithResults));
     await sendChunked(message, finalResponse);
 
     // Persist to history
@@ -549,6 +549,23 @@ function sanitizeSearchQuery(query) {
     .replace(/\s{2,}/g, " ")    // collapse runs of whitespace
     .slice(0, 200)               // hard length cap
     .trim();
+}
+
+/**
+ * Strips the Gemma 4 thinking block from a raw LLM response.
+ * If the response contains <channel|>, only the content after the
+ * LAST occurrence is returned (the visible answer), trimmed of leading
+ * whitespace. If the tag is absent the string is returned unchanged (no-op).
+ * If the string ends with <channel|> (nothing after it), an empty string
+ * is returned — sendChunked already handles that with "*(no response)*".
+ * @param {string} text
+ * @returns {string}
+ */
+export function stripThinkBlock(text) {
+  const marker = "<channel|>";
+  const idx = text.lastIndexOf(marker);
+  if (idx === -1) return text;
+  return text.slice(idx + marker.length);
 }
 
 /**
