@@ -49,6 +49,27 @@ export async function handleCommand(message, _client, handlers = {}) {
     return null;
   }
 
+  // Check for dynamic search command
+  const searchCmd = config.search.command.replace(/^!/, "").toLowerCase();
+  if (cmd.toLowerCase() === searchCmd) {
+    if (config.search.enabled === "off") {
+      return "⚠️ Search is currently disabled.";
+    }
+    const query = parts.slice(1).join(" ").trim();
+    if (!query) {
+      return `Usage: \`${config.search.command} <query>\``;
+    }
+    if (!handleForcedSearch) {
+      return "⚠️ Search handler is not available.";
+    }
+    // handleForcedSearch sends its own replies
+    handleForcedSearch(message, query).catch((err) => {
+      logger.error(`Unhandled error in ${config.search.command}:`, err);
+      message.reply("⚠️ An unexpected error occurred during the search.").catch(() => {});
+    });
+    return null;
+  }
+
   switch (cmd.toLowerCase()) {
     case "reset": {
       historyService.reset(message.author.id);
@@ -97,35 +118,21 @@ export async function handleCommand(message, _client, handlers = {}) {
         .join("\n");
     }
 
-    case "search": {
-      const query = parts.slice(1).join(" ").trim();
-      if (!query) {
-        return "Usage: `!search <query>`";
-      }
-      if (!handleForcedSearch) {
-        return "⚠️ Search handler is not available.";
-      }
-      // handleForcedSearch sends its own replies
-      handleForcedSearch(message, query).catch((err) => {
-        logger.error("Unhandled error in !search:", err);
-        message.reply("⚠️ An unexpected error occurred during the search.").catch(() => {});
-      });
-      return null;
-    }
-
     case "help": {
       const lines = [
         "**Available commands:**",
         "`!reset` — Clear your conversation history",
         "`!status` — Check local agent availability and active model (admins only)",
-        "`!search <query>` — Force a web search via SearXNG",
-        "`!help` — Show this message",
-        "",
-        "**Chatting:** Mention me (`@BotName your question`) to start a conversation.",
       ];
-      if (config.escalate.enabled === "on" && config.escalate.mode === "command") {
-        lines.splice(3, 0, `\`${config.escalate.command}\` — Escalate to the heavy model`);
+      if (config.search.enabled !== "off") {
+        lines.push(`\`${config.search.command} <query>\` — Force a web search via SearXNG`);
       }
+      if (config.escalate.enabled === "on" && config.escalate.mode === "command") {
+        lines.push(`\`${config.escalate.command}\` — Escalate to the heavy model`);
+      }
+      lines.push("`!help` — Show this message");
+      lines.push("");
+      lines.push("**Chatting:** Mention me (`@BotName your question`) to start a conversation.");
       return lines.join("\n");
     }
 
