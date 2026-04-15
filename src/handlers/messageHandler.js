@@ -84,6 +84,7 @@ export async function onMessage(message, client) {
   if (isCommand(message.content)) {
     const reply = await handleCommand(message, client, {
       handleForcedSearch,
+      handleForcedEscalation,
       getSemaphoreStats,
     });
     if (reply) {
@@ -215,6 +216,16 @@ async function routeAndRespond(reqId, message, messages, userText) {
   // ── Route 2: local online → use Model 2 (common) ─────────────────────────
   await switchToCommon();
 
+  // Check for manual escalation command (only when local is online)
+  if (
+    config.escalate.enabled === "on" &&
+    config.escalate.mode === "command" &&
+    userText.trim().toLowerCase().split(/\s+/)[0] === config.escalate.command.toLowerCase()
+  ) {
+    logger.info(`[${reqId}] Manual escalation command detected`);
+    return await handleEscalation(reqId, message, messages);
+  }
+
   logger.info(`[${reqId}] Local agent online — using Model 2 (common)`);
   const model2Response = stripThinkBlock(await llamaChat(config.llama.localLlamaUrl, messages));
 
@@ -222,6 +233,16 @@ async function routeAndRespond(reqId, message, messages, userText) {
 
   if (ESCALATE_SIGNAL_RE.test(trimmed)) {
     // ── Route 3: escalation → Model 3 ────────────────────────────────────
+    if (config.escalate.enabled === "off") {
+      logger.warn(`[${reqId}] __ESCALATE__ signal dropped — ESCALATE=off`);
+      return await retryWithoutEscalation(reqId, message, messages);
+    }
+
+    if (config.escalate.mode === "command") {
+      logger.warn(`[${reqId}] __ESCALATE__ auto-signal dropped — ESCALATE_MODE=command`);
+      return await retryWithoutEscalation(reqId, message, messages);
+    }
+
     return await handleEscalation(reqId, message, messages);
   }
 
@@ -246,7 +267,86 @@ async function routeAndRespond(reqId, message, messages, userText) {
 
 // ── Escalation flow ───────────────────────────────────────────────────────────
 
+/**
+ * Re-runs the common model asking it to answer directly, without escalating.
+ * Used when escalation is disabled (ESCALATE=off) or suppressed (ESCALATE_MODE=command).
+ */
+async function retryWithoutEscalation(reqId, message, messages) {
+  const retryMessages = [
+    ...messages,
+    {
+      role: "user",
+      content: "Please answer the question directly without escalating. Do your best with the information you have.",
+    },
+  ];
+  const retryResponse = stripThinkBlock(await llamaChat(config.llama.localLlamaUrl, retryMessages));
+  await sendChunked(message, retryResponse);
+  return retryResponse;
+}
+
 async function handleEscalation(reqId, message, messages) {
+  if (config.escalate.type === "args") {
+    logger.info(`[${reqId}] Escalation type=args — using heavy params on common model (no model swap)`);
+
+    // Still generate a transition message from common model (same UX)
+    const transitionMessages = [
+      ...messages,
+      {
+        role: "user",
+        content:
+          "You are about to answer this question with deeper focus. " +
+          "Generate a short, natural, conversational message (1-2 sentences) " +
+          "telling the user you need more time to think about this specific question. " +
+          "Reference what they asked. Sound human, match their capitalization style. " +
+          "Do not mention \"model\" or \"AI\". " +
+          "Just say you need to dig deeper, research it, think it through, etc.",
+      },
+    ];
+    const transitionMsg = stripThinkBlock(await llamaChat(config.llama.localLlamaUrl, transitionMessages));
+    await sendChunked(message, transitionMsg);
+
+    // Re-run common model with heavy inference params (no model switch)
+    // Read heavy params — use config.llama.heavy if available, else fall back to config.llama globals
+    const heavyParams = config.llama.heavy ?? {
+      temperature:   config.llama.temperature,
+      topP:          config.llama.topP,
+      topK:          config.llama.topK,
+      minP:          config.llama.minP,
+      repeatPenalty: config.llama.repeatPenalty,
+      maxTokens:     config.llama.maxTokens,
+    };
+
+    const heavyResponse = stripThinkBlock(
+      await llamaChat(config.llama.localLlamaUrl, messages, {
+        temperature:    heavyParams.temperature,
+        top_p:          heavyParams.topP,
+        top_k:          heavyParams.topK,
+        min_p:          heavyParams.minP,
+        repeat_penalty: heavyParams.repeatPenalty,
+        max_tokens:     heavyParams.maxTokens > 0 ? heavyParams.maxTokens : -1,
+      })
+    );
+
+    // Guard: heavy model response should not contain __ESCALATE__
+    if (ESCALATE_SIGNAL_RE.test(heavyResponse.trim())) {
+      logger.warn(`[${reqId}] type=args escalation response contained __ESCALATE__ — using fallback`);
+      await sendChunked(message, MSG_HEAVY_ESCALATE_FALLBACK);
+      return MSG_HEAVY_ESCALATE_FALLBACK;
+    }
+
+    // Handle search signal
+    const searchMatch = SEARCH_SIGNAL_RE.exec(heavyResponse.trim());
+    if (searchMatch) {
+      const finalResponse = await handleSearchSignal(reqId, message, messages, heavyResponse, config.llama.localLlamaUrl);
+      await sendChunked(message, finalResponse);
+      return finalResponse;
+    }
+
+    await sendChunked(message, heavyResponse);
+    return heavyResponse;
+  }
+
+  // type=model (existing behaviour)
   logger.info(`[${reqId}] Model 2 escalated — switching to Model 3 (heavy)`);
 
   // 1. Ask Model 2 to generate a "I need more time" transition message BEFORE
@@ -477,6 +577,45 @@ export async function handleForcedSearch(message, query) {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Handles a forced escalation command (!escalate).
+ * Switches directly to the heavy model and runs handleEscalation.
+ *
+ * @param {import("discord.js").Message} message
+ */
+export async function handleForcedEscalation(message) {
+  if (!rateLimiter.check(message.author.id)) {
+    const retryAfterSec = rateLimitRetrySec(message.author.id);
+    await message.reply(`⏳ You're sending messages too fast. Please wait ${retryAfterSec}s before trying again.`).catch(() => {});
+    return;
+  }
+
+  if (!isLocalAvailable()) {
+    await message.reply("⚠️ Local agent is offline — escalation is not available right now.").catch(() => {});
+    return;
+  }
+
+  const reqId = randomUUID().slice(0, 8);
+  logger.info(`[${reqId}] Forced escalation command from ${message.author.tag}`);
+
+  await message.channel.sendTyping();
+  const typingInterval = setInterval(() => message.channel.sendTyping().catch(() => {}), 8_000);
+
+  await semaphore.acquire();
+  try {
+    await switchToCommon();
+    const messages = historyService.getMessages(message.author.id, config.llm.systemPromptCommon);
+    const fullResponse = await handleEscalation(reqId, message, messages);
+    historyService.pushAssistant(message.author.id, fullResponse);
+  } catch (err) {
+    logger.error(`[${reqId}] Error during forced escalation:`, err);
+    await message.reply("⚠️ Something went wrong during escalation.").catch(() => {});
+  } finally {
+    semaphore.release();
+    clearInterval(typingInterval);
+  }
+}
 
 /**
  * Exposes current semaphore stats for observability (used by !status).
