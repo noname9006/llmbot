@@ -1,691 +1,288 @@
-# discord-llm-bot
+# llmbot
 
-A Discord bot powered by **llama-server** (llama.cpp), using a three-model architecture. The VPS runs a lightweight fallback model; a Windows local machine with a GPU runs two additional models managed on demand. The bot routes every request to the best available model automatically.
-
----
-
-## Table of Contents
-
-1. [Architecture](#architecture)
-2. [How It Works — Routing & Scenarios](#how-it-works--routing--scenarios)
-3. [Feature Overview](#feature-overview)
-4. [Repository Structure](#repository-structure)
-5. [Full Setup from Scratch](#full-setup-from-scratch)
-   - [Prerequisites](#prerequisites)
-   - [Step 1 — Create a Discord Bot](#step-1--create-a-discord-bot)
-   - [Step 2 — Install llama.cpp on the VPS](#step-2--install-llamacpp-on-the-vps)
-   - [Step 3 — Configure & Start llama-server on the VPS](#step-3--configure--start-llama-server-on-the-vps)
-   - [Step 4 — Install Tailscale](#step-4--install-tailscale)
-   - [Step 5 — Install llama.cpp on Windows](#step-5--install-llamacpp-on-windows)
-   - [Step 6 — Set Up the Windows Local Agent](#step-6--set-up-the-windows-local-agent)
-   - [Step 7 — Deploy the Bot on the VPS](#step-7--deploy-the-bot-on-the-vps)
-6. [Environment Variables Reference](#environment-variables-reference)
-   - [Bot `.env` (VPS)](#bot-env-vps)
-   - [Agent `.env` (Windows)](#agent-env-windows)
-7. [Commands & Usage](#commands--usage)
-8. [Troubleshooting](#troubleshooting)
+A Discord bot powered by **llama-server** (llama.cpp) with a three-tier local/VPS LLM setup using Gemma 4. The VPS runs a lightweight always-on fallback model; a Windows local machine with a GPU runs two additional models managed on demand. The bot routes every request to the best available model automatically, with optional web search via SearXNG and automatic escalation to a heavier model for complex queries.
 
 ---
 
 ## Architecture
 
-```
-[Discord]
-    ↕
-[VPS: Node.js bot (PM2)]
-    ├── HTTP → [VPS: llama-server :8080 (PM2, always on)]
-    │           /home/ubuntu/lllm/<VPS_MODEL_FILE>
-    └── HTTP → [Windows: local agent :3000 (Node.js)]
-                    ↑ Tailscale  (Authorization: Bearer token)
-                    └── spawns/kills → [llama-server :8081]
-                                        F:\AI\.models\<model>
-```
+The bot uses three model roles:
 
-- The **VPS bot** (Node.js + PM2) is the only process that touches Discord.
-- The **VPS llama-server** (Model 1) runs 24/7 on CPU as a guaranteed fallback.
-- The **Windows local agent** is a small Express server that manages the lifecycle of llama-server on the Windows machine (start, stop, health).
-- The **Windows llama-server** (Models 2 & 3) runs on GPU via Vulkan; it is started on demand and auto-stopped after 15 minutes of idle time.
-- All communication between VPS and Windows travels over a **Tailscale** private network — no public ports needed on the Windows machine.
+- **VPS model** — always-on cloud fallback. A `llama-server` process runs permanently on the VPS. Every request falls back here when the local agent is unavailable.
+- **Common model** — everyday local GPU model. Managed by the Windows local agent, loaded on first use and kept resident. Handles the majority of requests when the local agent is online.
+- **Heavy model** — loaded on escalation. Also managed by the Windows local agent. Swapped in (or run with alternative inference args) when the common model signals a query is too complex.
+
+**Routing logic:** every incoming message goes to the common model if the local agent is up; otherwise it falls back to the VPS model. The common model can emit an `__ESCALATE__` signal to trigger the heavy model.
 
 ---
 
-## How It Works — Routing & Scenarios
+## Prerequisites
 
-Every incoming `@mention` message goes through the following decision tree:
-
-### Scenario A — Local agent offline (VPS-only mode)
-
-```
-User @mentions bot
-    → bot checks agent /health  →  offline
-    → sends message to VPS llama-server (Model 1, :8080)
-    → posts reply to Discord
-```
-
-Model 1 is always available, CPU-only, lightweight. Used as an always-on fallback.
+- **Node.js 18+**
+- A running `llama-server` instance for the VPS model (always-on fallback)
+- Windows local agent (see [`/agent`](./agent)) for local GPU models — manages loading/unloading llama-server on the Windows machine
+- A [SearXNG](https://searxng.github.io/searxng/) instance (optional, for web search)
+- A Discord bot token and application
 
 ---
 
-### Scenario B — Local agent online, simple question
+## Setup
 
-```
-User @mentions bot
-    → bot checks agent /health  →  online
-    → bot calls agent POST /start { model: "common.gguf" }  (if not already loaded)
-    → sends message to Windows llama-server (Model 2, :8081)
-    → Model 2 returns a normal reply
-    → posts reply to Discord
-```
-
-Model 2 is the everyday workhorse: GPU-accelerated, more capable than Model 1.
-
----
-
-### Scenario C — Local agent online, question too complex (escalation)
-
-```
-User @mentions bot
-    → bot routes to Model 2 (common)
-    → Model 2 replies with the special token  __ESCALATE__
-    → bot asks Model 2 to generate a short "I need to think" transition message
-    → bot calls agent POST /start { model: "heavy.gguf" }
-    → transition message is posted to Discord
-    → bot sends full conversation history to Model 3 (heavy)
-    → posts Model 3 reply to Discord
-    → 15-minute idle timer starts; if no messages arrive, agent POST /stop is called
-```
-
-Model 3 is the heavy model, loaded only when needed and auto-unloaded to free VRAM.
-
----
-
-### Scenario D — Web search triggered automatically
-
-Any model (1, 2, or 3) can signal that it needs live information by replying with:
-
-```
-__SEARCH__: <search query>
-```
-
-When the bot detects this signal:
-
-```
-Model returns  __SEARCH__: how to install Node.js
-    → bot sanitises the query
-    → bot asks the same model to generate "I'm looking this up…" message → posts it
-    → bot queries SearXNG  →  formats top N results
-    → injects results as a system message into the conversation
-    → re-runs the same model with search results in context
-    → posts final answer to Discord
-```
-
-A second `__SEARCH__` signal in the follow-up response is suppressed with a safe fallback to prevent infinite loops.
-
----
-
-### Scenario E — Forced web search (`!search`)
-
-```
-User types: !search what is the capital of France
-    → bot picks the currently active endpoint (local if online, VPS otherwise)
-    → runs SearXNG query
-    → injects results and calls the model
-    → posts answer to Discord
-    → saves exchange to user conversation history
-```
-
----
-
-### Model idle auto-shutdown
-
-After Model 3 (heavy) handles a response, a **15-minute idle timer** starts. Any new message from any user resets the timer. When the timer fires with no activity, the bot sends `POST /stop` to the Windows agent, which kills the llama-server process and frees GPU memory. The next request that needs the heavy model will reload it transparently.
-
----
-
-### Availability polling
-
-The bot polls the Windows agent's `/health` endpoint every `LOCAL_HEALTH_POLL_INTERVAL_MS` milliseconds (default 30 s). State transitions are logged:
-
-- `offline → online`: cached model state is reset; next request triggers a fresh `/start`.
-- `online → offline`: bot falls back to VPS Model 1 automatically.
-
-The VPS llama-server is also polled and its status is visible via `!status`.
-
----
-
-### Circuit breaker
-
-If the Windows agent's `/start` endpoint fails **3 consecutive times**, the circuit breaker opens for **2 minutes**. During that window all local model requests fail fast with an error message, preventing a flood of slow timeouts. The breaker resets automatically on a successful `/start` or when the agent reconnects.
-
----
-
-### Capitalization mirroring
-
-The bot detects the capitalization style of the user's first word and injects an ephemeral system reminder so the model matches it:
-
-| User writes | Model writes |
-|-------------|--------------|
-| `lowercase question` | entirely lowercase reply |
-| `Capitalised question` | Normal sentence capitalisation |
-| `ALL CAPS QUESTION` | ALL CAPS REPLY |
-
----
-
-### Conversation memory
-
-Each Discord user gets an isolated conversation history (sliding window, default 10 user+assistant pairs). The system prompt from `sysprompt.txt` is always prepended. Histories older than 24 hours are evicted automatically. Users can clear their own history with `!reset`.
-
----
-
-### Rate limiting & concurrency
-
-- **Per-user**: max 5 messages per 30-second sliding window (configurable).
-- **Global**: max 5 simultaneous LLM calls in flight (configurable). Additional requests queue until a slot opens.
-
----
-
-## Feature Overview
-
-| Feature | Details |
-|---------|---------|
-| Three-model routing | VPS fallback → local common → local heavy, fully automatic |
-| Automatic escalation | Model 2 signals `__ESCALATE__` to trigger Model 3 |
-| Auto web search | Any model can signal `__SEARCH__: <query>` to fetch live results |
-| Forced search | `!search <query>` command bypasses the model's decision |
-| SearXNG integration | Configurable result count, sanitised query injection |
-| GPU auto-management | llama-server is started/stopped on demand; 15 min idle shutdown |
-| Circuit breaker | Opens after 3 consecutive agent failures, recovers after 2 min |
-| Conversation memory | Per-user sliding window, 24 h TTL, `!reset` command |
-| Rate limiting | Per-user + global concurrency cap |
-| Retry with back-off | Exponential retry on LLM and SearXNG calls |
-| Capitalization mirroring | Reply style matches the user's casing |
-| Long message splitting | Replies > 1900 chars are automatically chunked |
-| PM2 managed | Bot and VPS llama-server run under PM2 with auto-restart |
-| Tailscale networking | Secure private tunnel — no public ports on Windows |
-| Health endpoint | Optional HTTP `/health` port for uptime monitors |
-
----
-
-## Repository Structure
-
-```
-discord-llm-bot/
-├── src/
-│   ├── index.js                        # Entry point & graceful shutdown
-│   ├── bot.js                          # Discord client setup
-│   ├── config.js                       # Validated config from .env
-│   ├── logger.js                       # Leveled logger with timers
-│   ├── handlers/
-│   │   ├── messageHandler.js           # @mention handler, routing, search, escalation
-│   │   └── commandHandler.js           # !reset, !status, !search, !help
-│   ├── services/
-│   │   ├── llamaService.js             # OpenAI-compat client for llama-server
-│   │   ├── agentService.js             # HTTP client for Windows agent + model state + circuit breaker
-│   │   ├── localAvailabilityService.js # Polls agent /health and VPS /models
-│   │   ├── searchService.js            # SearXNG client
-│   │   └── historyService.js           # Per-user conversation memory
-│   └── utils/
-│       ├── rateLimiter.js              # Per-user sliding window + global semaphore
-│       └── retry.js                    # Exponential back-off retry wrapper
-├── agent/
-│   ├── index.js                        # Windows local agent (Express)
-│   ├── package.json
-│   ├── .env.example
-│   └── README.md                       # Agent-specific setup guide
-├── .env.example                        # Bot environment template
-├── ecosystem.config.js                 # PM2 config for the bot
-├── package.json
-└── sysprompt.txt                       # Default system prompt (edit freely)
-```
-
----
-
-## Full Setup from Scratch
-
-### Prerequisites
-
-| Where | What | Notes |
-|-------|------|-------|
-| VPS | Ubuntu 20.04+ (or similar 64-bit Linux) | Any cloud provider |
-| VPS | Node.js ≥ 18 | `node --version` to check |
-| VPS | PM2 | `npm install -g pm2` |
-| VPS | llama-server binary (AVX2 Linux build) | See Step 2 |
-| VPS | A GGUF model file for the fallback (Model 1) | Hugging Face |
-| Windows machine | Node.js ≥ 18 | https://nodejs.org |
-| Windows machine | llama-server.exe (Vulkan build) | See Step 5 |
-| Windows machine | GGUF model files for Models 2 & 3 | Hugging Face |
-| Windows machine | Tailscale | https://tailscale.com |
-| Both | Tailscale installed and connected to the same tailnet | See Step 4 |
-| Discord | A bot application with `MESSAGE CONTENT INTENT` enabled | See Step 1 |
-
----
-
-### Step 1 — Create a Discord Bot
-
-1. Go to [discord.com/developers/applications](https://discord.com/developers/applications).
-2. Click **New Application** → give it a name → **Create**.
-3. In the left sidebar click **Bot**.
-4. Click **Add Bot** (if shown) → confirm.
-5. Under **Token** click **Reset Token** → copy and **save it** (you will need it for `DISCORD_TOKEN`).
-6. Scroll down to **Privileged Gateway Intents** and enable **Message Content Intent**. Save changes.
-7. In the left sidebar click **OAuth2 → URL Generator**.
-   - Scopes: check `bot`.
-   - Bot Permissions: check **Read Messages / View Channels**, **Send Messages**, **Read Message History**.
-8. Copy the generated URL, open it in a browser, and invite the bot to your server.
-
----
-
-### Step 2 — Install llama.cpp on the VPS
-
-The easiest way is to download a pre-built binary from the llama.cpp GitHub releases page.
+### 1. Clone and install
 
 ```bash
-# On the VPS — download the latest pre-built Linux AVX2 bundle
-# Check https://github.com/ggerganov/llama.cpp/releases for the latest tag
-LLAMA_VERSION=b5510   # replace with the latest version tag
-
-wget https://github.com/ggerganov/llama.cpp/releases/download/${LLAMA_VERSION}/llama-${LLAMA_VERSION}-bin-ubuntu-x64.zip -O llama.zip
-unzip llama.zip -d llama-bin
-```
-
-> **Tip:** If the VPS does not support AVX2 (some older or ARM VMs), look for an `avx` or `noavx` build. Check support with: `grep -o 'avx[^ ]*' /proc/cpuinfo | sort -u`
-
-The binary you need is called `llama-server` (no extension). Verify:
-
-```bash
-./llama-bin/build/bin/llama-server --version
-```
-
-Move it somewhere permanent:
-
-```bash
-sudo cp llama-bin/build/bin/llama-server /usr/local/bin/llama-server
-sudo chmod +x /usr/local/bin/llama-server
-```
-
----
-
-### Step 3 — Configure & Start llama-server on the VPS
-
-**Place your Model 1 (fallback) GGUF file:**
-
-```bash
-mkdir -p /home/ubuntu/lllm
-# Copy or download your model, e.g.:
-# wget https://huggingface.co/.../phi4-mini.Q4_K_M.gguf -O /home/ubuntu/lllm/phi4-mini.Q4_K_M.gguf
-```
-
-**Start llama-server under PM2 (CPU-only, always on):**
-
-```bash
-pm2 start --name llama-vps \
-  /usr/local/bin/llama-server \
-  -- \
-  --model /home/ubuntu/lllm/phi4-mini.Q4_K_M.gguf \
-  --port 8080 \
-  --host 127.0.0.1 \
-  -ngl 0           # CPU-only; 0 GPU layers
-```
-
-Save the PM2 process list so it survives a reboot:
-
-```bash
-pm2 save
-pm2 startup   # follow the printed command (it will look like: sudo env PATH=... pm2 startup ...)
-```
-
-Verify llama-server is running:
-
-```bash
-curl http://localhost:8080/health
-# Expected: {"status":"ok"} or similar
-```
-
-**llama-server common flags reference:**
-
-| Flag | Meaning |
-|------|---------|
-| `--model <path>` | Path to the GGUF model file |
-| `--port <n>` | Port to listen on |
-| `--host <ip>` | Bind address (`127.0.0.1` for local-only) |
-| `-ngl <n>` | GPU layers to offload (`0` = CPU-only) |
-| `--ctx-size <n>` | Context window size (default varies by model) |
-| `-np <n>` | Number of parallel inference slots |
-
----
-
-### Step 4 — Install Tailscale
-
-Tailscale creates a private encrypted network between your VPS and Windows machine so they can communicate securely without exposing any ports to the public internet.
-
-**On the VPS (Linux):**
-
-```bash
-curl -fsSL https://tailscale.com/install.sh | sh
-sudo tailscale up
-```
-
-Follow the authentication URL printed in the terminal to log in.
-
-**On Windows:**
-
-1. Download and install Tailscale from [tailscale.com/download](https://tailscale.com/download/windows).
-2. Open Tailscale from the system tray → **Log in** → authenticate with the same account as the VPS.
-
-**Verify both machines are on the same tailnet:**
-
-```bash
-# On the VPS:
-tailscale status
-```
-
-You should see the Windows machine listed. Note its **Tailscale IP** (it starts with `100.`). You will use it for `LOCAL_AGENT_URL` and `LOCAL_LLAMA_URL` in the bot's `.env`.
-
----
-
-### Step 5 — Install llama.cpp on Windows
-
-The Windows machine uses the **Vulkan** backend (works with AMD, NVIDIA, and Intel GPUs).
-
-1. Go to [github.com/ggerganov/llama.cpp/releases](https://github.com/ggerganov/llama.cpp/releases).
-2. Find the latest release and download the file named:
-   `llama-<version>-bin-win-vulkan-x64.zip`
-3. Extract the zip, e.g. to `F:\AI\llama.cpp\`.
-4. The executable you need is `llama-server.exe` inside the extracted folder.
-
-Verify it works (run in PowerShell):
-
-```powershell
-F:\AI\llama.cpp\llama-server.exe --version
-```
-
-**Place your model files** in a dedicated directory, e.g. `F:\AI\.models\`:
-
-```
-F:\AI\.models\
-    your-common-model.Q4_K_M.gguf   ← Model 2 (everyday use)
-    your-heavy-model.Q4_K_M.gguf    ← Model 3 (complex questions)
-```
-
-You can download GGUF models from [Hugging Face](https://huggingface.co/models?library=gguf). Recommended quantization: `Q4_K_M` for a balance of quality and VRAM use.
-
-**Install Vulkan drivers** if not already installed:
-- AMD: [amd.com/en/support](https://www.amd.com/en/support)
-- NVIDIA: standard Game Ready or Studio driver includes Vulkan
-- Verify: run `vulkaninfo` in PowerShell (install `vulkan-sdk` from [lunarg.com](https://www.lunarg.com/vulkan-sdk/) if the command is missing)
-
----
-
-### Step 6 — Set Up the Windows Local Agent
-
-The agent is a small Node.js/Express server that the VPS bot calls to start and stop llama-server.
-
-**In PowerShell on your Windows machine:**
-
-```powershell
-# Clone the repo (or copy the agent folder to Windows)
-git clone https://github.com/noname9006/llmbot.git discord-llm-bot
-cd discord-llm-bot\agent
-
-# Install dependencies
+git clone https://github.com/noname9006/llmbot.git
+cd llmbot
 npm install
-
-# Create the environment file
-copy .env.example .env
-notepad .env
 ```
 
-**Edit `agent\.env`** — set every value to match your paths:
-
-```dotenv
-PORT=3000
-AGENT_TOKEN=replace_with_a_long_random_secret   # must match LOCAL_AGENT_TOKEN in bot .env
-
-LLAMA_SERVER_BIN=F:\AI\llama.cpp\llama-server.exe
-LLAMA_SERVER_PORT=8081
-LLAMA_MODEL_DIR=F:\AI\.models
-
-LLAMA_GPU_LAYERS=99       # offload all layers to GPU (recommended)
-# LLAMA_CONTEXT_SIZE=4096 # optional; omit to use the model's built-in default
-
-LOG_LEVEL=info
-```
-
-**Generate a secure random token** (run in PowerShell):
-
-```powershell
--join ((65..90 + 97..122 + 48..57) | Get-Random -Count 40 | ForEach-Object {[char]$_})
-```
-
-Copy the output into both `AGENT_TOKEN` (agent `.env`) and `LOCAL_AGENT_TOKEN` (bot `.env`).
-
-**Open the Windows Firewall** to allow the VPS to reach the agent over Tailscale (run as Administrator in PowerShell):
-
-```powershell
-# Allow agent port from Tailscale subnet only (100.64.0.0/10)
-New-NetFirewallRule -DisplayName "llmbot-agent" `
-  -Direction Inbound -Protocol TCP -LocalPort 3000 `
-  -RemoteAddress "100.64.0.0/10" -Action Allow
-
-# Allow llama-server port from Tailscale subnet only
-New-NetFirewallRule -DisplayName "llmbot llama-server" `
-  -Direction Inbound -Protocol TCP -LocalPort 8081 `
-  -RemoteAddress "100.64.0.0/10" -Action Allow
-```
-
-**Run the agent:**
-
-```powershell
-# Foreground (for testing):
-nnode index.js
-
-# Background with PM2 (recommended for persistent use):
-npm install -g pm2
-pm2 start index.js --name llmbot-agent
-pm2 save
-pm2 startup   # follow printed command to enable auto-start on Windows boot
-```
-
-Verify the agent is reachable from the VPS (replace `100.x.x.x` with the Windows Tailscale IP):
+### 2. Configure environment
 
 ```bash
-# Run on the VPS:
-curl -H "Authorization: Bearer your_token_here" http://100.x.x.x:3000/health
-# Expected: {"status":"ok","running":false,"model":null}
-```
-
----
-
-### Step 7 — Deploy the Bot on the VPS
-
-```bash
-# On the VPS:
-git clone https://github.com/noname9006/llmbot.git discord-llm-bot
-cd discord-llmbot
-npm install
-
 cp .env.example .env
-nano .env
 ```
 
-**Edit `.env`** — fill in every required value:
+Edit `.env` and fill in all required values. See the [Environment Variables](#environment-variables) section for a full reference.
 
-```dotenv
-# Discord
-DISCORD_TOKEN=your_discord_bot_token_here
-ALLOWED_CHANNEL_IDS=          # leave empty to allow all channels, or e.g. 123456789,987654321
+### 3. System prompts
 
-# VPS llama-server (Model 1 — always on fallback)
-VPS_LLAMA_URL=http://localhost:8080/v1
-VPS_MODEL_FILE=phi4-mini.Q4_K_M.gguf   # filename for log display only
+The bot loads a separate system prompt file for each model role:
 
-# Windows local agent (Tailscale IP of the Windows machine)
-LOCAL_AGENT_URL=http://100.x.x.x:3000
-LOCAL_AGENT_TOKEN=replace_with_same_secret_as_agent_env
+| File | Role |
+|------|------|
+| `sysprompt_vps.txt` | VPS model system prompt |
+| `sysprompt.txt` / `sysprompt_common.txt` | Common model system prompt |
+| `sysprompt_heavy.txt` | Heavy model system prompt |
 
-# Windows llama-server (same Tailscale IP, different port)
-LOCAL_LLAMA_URL=http://100.x.x.x:8081/v1
+Each file falls back to `sysprompt.txt` if the role-specific file does not exist. Edit these files to customise the bot's personality and behaviour per model.
 
-# Model filenames (must exist in LLAMA_MODEL_DIR on Windows)
-LOCAL_MODEL_COMMON_FILE=your-common-model.Q4_K_M.gguf
-LOCAL_MODEL_HEAVY_FILE=your-heavy-model.Q4_K_M.gguf
-
-# SearXNG (optional but required for web search features)
-SEARXNG_BASE_URL=http://your-searxng-instance
-
-# Tuning (defaults are reasonable; adjust as needed)
-LLM_TEMPERATURE=0.8
-LLM_MAX_TOKENS=2048
-HISTORY_MAX_PAIRS=10
-LOG_LEVEL=info
-```
-
-**Create the logs directory and start with PM2:**
+### 4. Run
 
 ```bash
-mkdir -p logs
-pm2 start ecosystem.config.js
+npm start
+```
+
+For production use with PM2:
+
+```bash
+pm2 start ecosystem.config.cjs
 pm2 save
-pm2 startup   # follow the printed command
-```
-
-**Verify everything is running:**
-
-```bash
-pm2 list
-# You should see: llama-vps (online) and discord-llm-bot (online)
-
-pm2 logs discord-llm-bot --lines 30
-# You should see: "Starting discord-llm-bot..." and "Logged in as YourBot#1234"
-```
-
-Go to Discord, mention the bot in a channel, and it should reply.
-
----
-
-## Environment Variables Reference
-
-### Bot `.env` (VPS)
-
-| Variable | Default | Required | Description |
-|----------|---------|----------|-------------|
-| `DISCORD_TOKEN` | — | ✅ | Discord bot token from the developer portal |
-| `ALLOWED_CHANNEL_IDS` | *(empty = all)* | | Comma-separated channel IDs to restrict the bot to |
-| `VPS_LLAMA_URL` | `http://localhost:8080/v1` | | VPS llama-server OpenAI-compat base URL |
-| `VPS_MODEL_FILE` | `phi4-mini.Q4_K_M.gguf` | | VPS model filename (used in logs only) |
-| `LOCAL_AGENT_URL` | *(empty)* | | Windows agent URL, e.g. `http://100.x.x.x:3000` |
-| `LOCAL_AGENT_TOKEN` | *(empty)* | | Bearer token for agent authentication |
-| `LOCAL_LLAMA_URL` | *(empty)* | | Windows llama-server URL, e.g. `http://100.x.x.x:8081/v1` |
-| `LOCAL_MODEL_COMMON_FILE` | *(empty)* | | Filename of the common (Model 2) GGUF |
-| `LOCAL_MODEL_HEAVY_FILE` | *(empty)* | | Filename of the heavy (Model 3) GGUF |
-| `LOCAL_HEALTH_POLL_INTERVAL_MS` | `30000` | | How often (ms) to poll the agent `/health` |
-| `SEARXNG_BASE_URL` | *(empty)* | | SearXNG instance URL (required for search features) |
-| `SEARCH_RESULT_COUNT` | `5` | | Number of search results injected into context |
-| `LLM_TEMPERATURE` | `0.8` | | Sampling temperature |
-| `LLM_TOP_P` | `0.95` | | Top-p (nucleus) sampling |
-| `LLM_TOP_K` | `40` | | Top-k sampling |
-| `LLM_MIN_P` | `0.0` | | Min-p sampling |
-| `LLM_REPETITION_PENALTY` | `1.1` | | Repetition penalty |
-| `LLM_MAX_TOKENS` | `2048` | | Max tokens per completion (`-1` = unlimited) |
-| `LLM_FETCH_TIMEOUT_MS` | `120000` | | Timeout per LLM HTTP call in ms (`0` = none) |
-| `SYSTEM_PROMPT` | *(from sysprompt.txt)* | | Override the system prompt entirely (env takes priority if sysprompt.txt missing) |
-| `HISTORY_MAX_PAIRS` | `10` | | Conversation pairs kept per user (sliding window) |
-| `LOG_LEVEL` | `info` | | `debug` / `info` / `warn` / `error` |
-| `RATE_LIMIT_MAX_REQUESTS` | `5` | | Max messages per user per window |
-| `RATE_LIMIT_WINDOW_MS` | `30000` | | Rate limit sliding window in ms |
-| `MAX_CONCURRENT_REQUESTS` | `5` | | Max simultaneous LLM calls across all users |
-| `RETRY_MAX_ATTEMPTS` | `3` | | Max retry attempts for LLM / SearXNG calls |
-| `RETRY_INITIAL_DELAY_MS` | `500` | | Initial retry delay in ms (doubles each attempt) |
-| `HEALTH_PORT` | `0` | | Port for the bot's own `/health` endpoint (`0` = disabled) |
-
-### Agent `.env` (Windows)
-
-| Variable | Default | Required | Description |
-|----------|---------|----------|-------------|
-| `PORT` | `3000` | | Port the agent HTTP server listens on |
-| `AGENT_TOKEN` | *(empty)* | ✅ | Bearer token — must match `LOCAL_AGENT_TOKEN` in bot `.env` |
-| `LLAMA_SERVER_BIN` | `llama-server` | ✅ | Full path to `llama-server.exe` |
-| `LLAMA_SERVER_PORT` | `8081` | | Port llama-server listens on |
-| `LLAMA_MODEL_DIR` | `.` | ✅ | Directory containing GGUF model files |
-| `LLAMA_GPU_LAYERS` | `99` | | Layers to offload to GPU (`99` = all) |
-| `LLAMA_CONTEXT_SIZE` | *(model default)* | | Context window size passed to llama-server |
-| `LOG_LEVEL` | `info` | | `debug` / `info` / `warn` / `error` |
-
----
-
-## Commands & Usage
-
-### Chatting
-
-Mention the bot in any allowed channel:
-
-```
-@BotName what is the boiling point of water?
-```
-
-The bot will automatically choose the best available model, show a typing indicator while thinking, and reply. Long replies (> 1900 characters) are split into multiple messages automatically.
-
-### Commands
-
-| Command | Who can use | Description |
-|---------|-------------|-------------|
-| `!reset` | Everyone | Clears your personal conversation history |
-| `!status` | Server admins only | Shows active model, VPS state, request queue, and uptime |
-| `!search <query>` | Everyone | Forces a SearXNG web search and asks the model to answer using the results |
-| `!help` | Everyone | Lists all available commands |
-
-### `!status` output example
-
-```
-🟢 Local agent online (active model: common)
-   ⏱ Online for 4m 32s
-🟢 VPS llama-server online
-⚙️ LLM requests: 1 active, 0 queued
-📊 Active user histories: 3
+pm2 startup
 ```
 
 ---
 
-## Troubleshooting
+## Commands
 
-**Bot doesn't respond to mentions**
-- Check `pm2 logs discord-llm-bot` for errors.
-- Ensure **Message Content Intent** is enabled in the Discord developer portal.
-- Make sure the bot has permission to read and send messages in the target channel.
-- If `ALLOWED_CHANNEL_IDS` is set, confirm the channel ID is in the list.
+| Command | Description |
+|---------|-------------|
+| `!reset` | Clear your conversation history |
+| `!status` | Check local agent status and active model (server administrators only) |
+| `!search <query>` | Force a web search (default name; configurable via `SEARCH_COMMAND`) |
+| `!escalate` | Force escalation to the heavy model (default name; configurable via `ESCALATE_COMMAND`; only shown when `ESCALATE_MODE=command`) |
+| `!help` | Show available commands |
 
-**VPS model unreachable**
-- `curl http://localhost:8080/health` — should return `{"status":"ok"}`.
-- `pm2 logs llama-vps` — check for model loading errors.
-- Make sure `VPS_LLAMA_URL` in the bot `.env` matches the port llama-server is listening on.
+Command names for search and escalation are dynamic — they reflect whatever you set in `SEARCH_COMMAND` and `ESCALATE_COMMAND`.
 
-**Local agent unreachable**
-- Run `!status` in Discord — the local agent line will show offline.
-- Check Tailscale is connected on both machines: `tailscale status`.
-- Confirm Windows Firewall allows port 3000 from the Tailscale subnet (`100.64.0.0/10`).
-- Check agent logs: `pm2 logs llmbot-agent` (Windows) or `node index.js` in the foreground.
-- Test from the VPS: `curl -H "Authorization: Bearer <token>" http://<tailscale-ip>:3000/health`.
+---
 
-**Model fails to load on Windows**
-- Check `LLAMA_SERVER_BIN` — the path must point to the actual `llama-server.exe`.
-- Check `LLAMA_MODEL_DIR` — the GGUF filename sent by the bot must exist in this directory.
-- Large models (7B+) can take 60–120 s to load — wait before assuming failure.
-- Run `llama-server.exe --model <path> --port 8081` manually in PowerShell to see raw error output.
+## Environment Variables
 
-**GPU not being used on Windows**
-- Make sure you downloaded a **Vulkan** build of llama-server (filename contains `vulkan`).
-- Set `LLAMA_GPU_LAYERS=99` in `agent\.env`.
-- Verify Vulkan driver is installed: run `vulkaninfo` in PowerShell.
-- For AMD GPUs: update to the latest Adrenalin driver.
+Copy `.env.example` to `.env` and edit it. Variables marked **required** have no default and must be set.
 
-**Circuit breaker is open**
-- If you see "Agent circuit breaker is OPEN" in the logs, the agent's `/start` failed 3 times in a row.
-- The circuit auto-recovers after 2 minutes. Check why `/start` is failing in the agent logs.
-- Restarting the bot (`pm2 restart discord-llm-bot`) also resets the circuit breaker.
+### Discord
 
-**Messages cut off at 2000 characters**
-- This is Discord's hard limit. The bot automatically splits long replies into multiple messages at natural line/word boundaries.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DISCORD_TOKEN` | — **required** | Discord bot token |
+| `ALLOWED_CHANNEL_IDS` | *(empty — all channels)* | Comma-separated channel IDs the bot will respond in. Leave empty to allow all channels. |
 
-**Search returns no results**
-- Verify `SEARXNG_BASE_URL` is set and the SearXNG instance is reachable from the VPS.
-- Test: `curl "http://your-searxng-instance/search?q=test&format=json"`.
+### LLM endpoints
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VPS_LLAMA_URL` | `http://localhost:8080/v1` | Base URL of the VPS llama-server OpenAI-compatible API |
+| `LOCAL_LLAMA_URL` | *(empty)* | Direct URL of the local llama-server on the Windows machine (same Tailscale IP as the agent, different port) |
+
+### Model files
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VPS_MODEL_FILE` | `phi4-mini.Q4_K_M.gguf` | Model filename shown in logs for the VPS instance |
+| `LOCAL_MODEL_COMMON_FILE` | *(empty)* | GGUF filename for the common model (looked up in the agent's `LLAMA_MODEL_DIR`) |
+| `LOCAL_MODEL_HEAVY_FILE` | *(empty)* | GGUF filename for the heavy model |
+
+### System prompts
+
+System prompts are loaded from files, not environment variables. See [Setup → System prompts](#3-system-prompts) above. You can override the fallback system prompt via `SYSTEM_PROMPT=...` if you want to skip prompt files entirely.
+
+### Windows local agent
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LOCAL_AGENT_URL` | *(empty)* | HTTP URL of the Windows local agent (e.g. `http://100.x.x.x:3000`) |
+| `LOCAL_AGENT_TOKEN` | *(empty)* | Bearer token — must match `AGENT_TOKEN` in the agent's `.env` |
+| `LOCAL_HEALTH_POLL_INTERVAL_MS` | `30000` | How often (ms) to poll the agent `/health` endpoint |
+
+### Escalation controls
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ESCALATE` | `on` | Master switch — `on` enables escalation, `off` disables it entirely |
+| `ESCALATE_MODE` | `auto` | `auto`: the common model's `__ESCALATE__` signal triggers escalation automatically. `command`: auto-signals are ignored; user must type the escalate command. |
+| `ESCALATE_COMMAND` | `!escalate` | Command users type to manually trigger escalation (only used when `ESCALATE_MODE=command`). Must start with `!`. |
+| `ESCALATE_TYPE` | `model` | `model`: switch to the heavy model when escalating. `args`: keep the common model but re-run the query with the heavy extra args (`LLAMA_EXTRA_ARGS_HEAVY`). |
+
+### Search controls
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SEARCH` | `on` | Master switch — `on` enables search, `off` disables it entirely |
+| `SEARCH_MODE` | `auto` | `auto`: the model's `__SEARCH__: <query>` signal triggers a search automatically. `command`: auto-signals are dropped; only the search command works. |
+| `SEARCH_COMMAND` | `!search` | Command name for forced search. Must start with `!`. |
+| `SEARXNG_BASE_URL` | *(empty)* | Base URL of your SearXNG instance (required for search to work) |
+| `SEARCH_RESULT_COUNT` | `5` | Number of search results to inject into the model context |
+
+### llama.cpp startup args (per-model)
+
+These are passed to `llama-server` when the agent starts a model. The global `LLAMA_EXTRA_ARGS` is used as a fallback when a role-specific var is not set.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLAMA_EXTRA_ARGS` | *(empty)* | Global fallback extra args for llama-server |
+| `LLAMA_EXTRA_ARGS_VPS` | *(falls back to `LLAMA_EXTRA_ARGS`)* | Extra args for the VPS model |
+| `LLAMA_EXTRA_ARGS_COMMON` | *(falls back to `LLAMA_EXTRA_ARGS`)* | Extra args for the common model |
+| `LLAMA_EXTRA_ARGS_HEAVY` | *(falls back to `LLAMA_EXTRA_ARGS`)* | Extra args for the heavy model |
+
+### Context size (per-model)
+
+Passed to llama-server as the context window size. `0` means use the model default.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLAMA_CONTEXT_SIZE` | `0` | Global fallback context size |
+| `LLAMA_CONTEXT_SIZE_VPS` | *(falls back to `LLAMA_CONTEXT_SIZE`)* | Context size for the VPS model |
+| `LLAMA_CONTEXT_SIZE_COMMON` | *(falls back to `LLAMA_CONTEXT_SIZE`)* | Context size for the common model |
+| `LLAMA_CONTEXT_SIZE_HEAVY` | *(falls back to `LLAMA_CONTEXT_SIZE`)* | Context size for the heavy model |
+
+### Fetch timeout (per-model)
+
+Maximum time to wait for a single `/chat/completions` response before giving up.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_FETCH_TIMEOUT_MS` | `120000` | Global fallback fetch timeout in ms (`0` = no timeout) |
+| `LLM_FETCH_TIMEOUT_MS_VPS` | *(falls back to `LLM_FETCH_TIMEOUT_MS`)* | Fetch timeout for VPS requests |
+| `LLM_FETCH_TIMEOUT_MS_COMMON` | *(falls back to `LLM_FETCH_TIMEOUT_MS`)* | Fetch timeout for common model requests |
+| `LLM_FETCH_TIMEOUT_MS_HEAVY` | *(falls back to `LLM_FETCH_TIMEOUT_MS`)* | Fetch timeout for heavy model requests |
+
+### Inference parameters (global + per-model)
+
+Each global parameter has per-model overrides (`_VPS`, `_COMMON`, `_HEAVY`). Per-model values fall back to the global value when not set.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_TEMPERATURE` | `0.8` | Sampling temperature. Gemma 4 recommended: `1.0` |
+| `LLM_TEMPERATURE_COMMON` / `_HEAVY` / `_VPS` | *(falls back to `LLM_TEMPERATURE`)* | Per-model temperature override |
+| `LLM_TOP_P` | `0.95` | Top-p (nucleus) sampling. Gemma 4 recommended: `0.95` |
+| `LLM_TOP_P_COMMON` / `_HEAVY` / `_VPS` | *(falls back to `LLM_TOP_P`)* | Per-model top-p override |
+| `LLM_TOP_K` | `40` | Top-k sampling. Gemma 4 recommended: `64` |
+| `LLM_TOP_K_COMMON` / `_HEAVY` / `_VPS` | *(falls back to `LLM_TOP_K`)* | Per-model top-k override |
+| `LLM_MIN_P` | `0.0` | Min-p sampling threshold |
+| `LLM_MIN_P_COMMON` / `_HEAVY` / `_VPS` | *(falls back to `LLM_MIN_P`)* | Per-model min-p override |
+| `LLM_REPETITION_PENALTY` | `1.1` | Repetition penalty. Gemma 4 recommended: `1.0` (disabled) |
+| `LLM_REPEAT_PENALTY_COMMON` / `_HEAVY` / `_VPS` | *(falls back to `LLM_REPETITION_PENALTY`)* | Per-model repetition penalty override |
+| `LLM_MAX_TOKENS` | `2048` | Max tokens per response (`-1` = unlimited) |
+| `LLM_MAX_TOKENS_COMMON` / `_HEAVY` / `_VPS` | *(falls back to `LLM_MAX_TOKENS`)* | Per-model max tokens override |
+
+### History
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HISTORY_MAX_PAIRS` | `10` | Conversation message pairs kept per user (sliding window) |
+
+### Rate limiting
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RATE_LIMIT_MAX_REQUESTS` | `5` | Max messages per user per time window |
+| `RATE_LIMIT_WINDOW_MS` | `30000` | Sliding window duration in ms |
+| `MAX_CONCURRENT_REQUESTS` | `5` | Max simultaneous LLM calls across all users |
+
+### Retries
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RETRY_MAX_ATTEMPTS` | `3` | Max retry attempts for failed LLM/SearXNG calls |
+| `RETRY_INITIAL_DELAY_MS` | `500` | Initial backoff delay in ms (exponential back-off) |
+
+### Observability
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `HEALTH_PORT` | `0` (disabled) | Port to expose `GET /health` for uptime monitors. `0` disables it. |
+| `LOG_LEVEL` | `info` | Log verbosity: `debug` / `info` / `warn` / `error` |
+
+---
+
+## Gemma 4 Notes
+
+See [`gemma4.md`](./gemma4.md) for a full Gemma 4 setup and hardware guide.
+
+Key points for running Gemma 4 with this bot:
+
+- **Enable thinking mode** by passing `--chat-template-kwargs '{"enable_thinking":true}'` to llama-server. Set this via `LLAMA_EXTRA_ARGS_COMMON` and `LLAMA_EXTRA_ARGS_HEAVY` in your `.env`:
+
+  **Linux / bash:**
+  ```
+  LLAMA_EXTRA_ARGS_COMMON=--chat-template-kwargs '{"enable_thinking":true}'
+  LLAMA_EXTRA_ARGS_HEAVY=--chat-template-kwargs '{"enable_thinking":true}'
+  ```
+
+  **Windows PowerShell** (the agent reads these from its own `.env`):
+  ```
+  LLAMA_EXTRA_ARGS_COMMON=--chat-template-kwargs "{\"enable_thinking\":true}"
+  LLAMA_EXTRA_ARGS_HEAVY=--chat-template-kwargs "{\"enable_thinking\":true}"
+  ```
+- **Think blocks are automatically stripped** before the response is sent to Discord. The internal reasoning `<|channel>thought ... <channel|>` block is removed; only the final answer is shown.
+- **Recommended inference parameters** for Gemma 4: `temperature=1.0`, `top_p=0.95`, `top_k=64`, `repetition_penalty=1.0`. Set these globally or per-model:
+  ```
+  LLM_TEMPERATURE=1.0
+  LLM_TOP_P=0.95
+  LLM_TOP_K=64
+  LLM_REPETITION_PENALTY=1.0
+  ```
+- **VPS model** can be a different, smaller/faster model (e.g. a compact quantised model) — it does not need to be Gemma 4.
+
+---
+
+## Escalation Flow
+
+1. User sends a message → bot routes to the **common model** (if local agent is online) or the **VPS model** (if local agent is offline).
+2. The common model may emit `__ESCALATE__` in its response if the query is too complex.
+3. If `ESCALATE=on` and conditions are met:
+   - The bot sends a transition notification to Discord (e.g. *"switching to heavy model…"*).
+   - If `ESCALATE_TYPE=model`: the heavy model is loaded via the agent, the query is re-run with the heavy model.
+   - If `ESCALATE_TYPE=args`: the common model is kept; the query is re-run using `LLAMA_EXTRA_ARGS_HEAVY` inference params.
+4. The heavy model responds. It cannot escalate further.
+5. After the heavy model responds, the common model is reloaded (if common ≠ heavy; if they are the same file, no reload is needed).
+
+**Mode variants:**
+- `ESCALATE_MODE=command`: auto-escalation is disabled; users must type the escalate command (default `!escalate`) to trigger it manually.
+- `ESCALATE=off`: escalation is fully disabled regardless of model signals or commands.
+
+---
+
+## Search Flow
+
+1. A user message is processed by the model, which may emit `__SEARCH__: <query>` in its response.
+2. If `SEARCH=on` and `SEARCH_MODE=auto`: the search executes against SearXNG, results are injected into the conversation context, and the model re-runs to produce a final answer.
+3. Users can also force a search directly with the search command (default: `!search <query>`), bypassing the model signal.
+4. If `SEARCH_MODE=command`: auto-signals from the model are dropped; only the `!search` command triggers a search.
+5. If `SEARCH=off`: all search functionality is disabled.
+
+---
+
+## Agent Setup
+
+See [`agent/README.md`](./agent/README.md) for full instructions on setting up the Windows local agent that manages llama-server on the Windows machine.
