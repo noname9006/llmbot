@@ -19,13 +19,14 @@ class HistoryService {
    * Returns the full message array for a user, including the system prompt
    * prepended as the first message.
    * @param {string} userId
+   * @param {string} [systemPrompt]
    * @returns {Array<{role: string, content: string}>}
    */
-  getMessages(userId) {
+  getMessages(userId, systemPrompt = config.llm.systemPrompt) {
     this.#touch(userId);
     const history = this.#store.get(userId) ?? [];
     return [
-      { role: "system", content: config.llm.systemPrompt },
+      { role: "system", content: systemPrompt },
       ...history,
     ];
   }
