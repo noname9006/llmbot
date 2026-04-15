@@ -93,6 +93,9 @@ export const config = {
   search: {
     searxngBaseUrl: optional("SEARXNG_BASE_URL", ""),
     resultCount: parseInt(optional("SEARCH_RESULT_COUNT", "5"), 10),
+    enabled: optional("SEARCH",         "on"),       // "on" | "off"
+    mode:    optional("SEARCH_MODE",    "auto"),     // "auto" | "command"
+    command: optional("SEARCH_COMMAND", "!search"),  // must start with !
   },
   history: {
     maxPairs: parseInt(optional("HISTORY_MAX_PAIRS", "10"), 10),

@@ -202,6 +202,17 @@ async function routeAndRespond(reqId, message, messages, userText) {
       await sendChunked(message, MSG_VPS_ESCALATE_FALLBACK);
       return MSG_VPS_ESCALATE_FALLBACK;
     }
+    const vpsSearchMatch = SEARCH_SIGNAL_RE.exec(response.trim());
+    if (vpsSearchMatch) {
+      if (config.search.enabled === "off") {
+        logger.warn(`[${reqId}] __SEARCH__ signal dropped — SEARCH=off`);
+        return await retryWithoutSearch(reqId, message, vpsMessages, config.llama.vpsUrl);
+      }
+      if (config.search.mode === "command") {
+        logger.warn(`[${reqId}] __SEARCH__ auto-signal dropped — SEARCH_MODE=command`);
+        return await retryWithoutSearch(reqId, message, vpsMessages, config.llama.vpsUrl);
+      }
+    }
     const finalResponse = await handleSearchSignal(
       reqId,
       message,
@@ -249,6 +260,14 @@ async function routeAndRespond(reqId, message, messages, userText) {
   const searchMatch = SEARCH_SIGNAL_RE.exec(trimmed);
   if (searchMatch) {
     // ── Route 4: search signal from Model 2 ──────────────────────────────
+    if (config.search.enabled === "off") {
+      logger.warn(`[${reqId}] __SEARCH__ signal dropped — SEARCH=off`);
+      return await retryWithoutSearch(reqId, message, messages, config.llama.localLlamaUrl);
+    }
+    if (config.search.mode === "command") {
+      logger.warn(`[${reqId}] __SEARCH__ auto-signal dropped — SEARCH_MODE=command`);
+      return await retryWithoutSearch(reqId, message, messages, config.llama.localLlamaUrl);
+    }
     const finalResponse = await handleSearchSignal(
       reqId,
       message,
@@ -266,6 +285,23 @@ async function routeAndRespond(reqId, message, messages, userText) {
 }
 
 // ── Escalation flow ───────────────────────────────────────────────────────────
+
+/**
+ * Re-runs the model asking it to answer directly, without searching.
+ * Used when search is disabled (SEARCH=off) or suppressed (SEARCH_MODE=command).
+ */
+async function retryWithoutSearch(reqId, message, messages, baseUrl) {
+  const retryMessages = [
+    ...messages,
+    {
+      role: "user",
+      content: "Please answer directly without searching. Use only what you already know.",
+    },
+  ];
+  const retryResponse = stripThinkBlock(await llamaChat(baseUrl, retryMessages));
+  await sendChunked(message, retryResponse);
+  return retryResponse;
+}
 
 /**
  * Re-runs the common model asking it to answer directly, without escalating.
@@ -337,6 +373,14 @@ async function handleEscalation(reqId, message, messages) {
     // Handle search signal
     const searchMatch = SEARCH_SIGNAL_RE.exec(heavyResponse.trim());
     if (searchMatch) {
+      if (config.search.enabled === "off") {
+        logger.warn(`[${reqId}] __SEARCH__ signal dropped — SEARCH=off`);
+        return await retryWithoutSearch(reqId, message, messages, config.llama.localLlamaUrl);
+      }
+      if (config.search.mode === "command") {
+        logger.warn(`[${reqId}] __SEARCH__ auto-signal dropped — SEARCH_MODE=command`);
+        return await retryWithoutSearch(reqId, message, messages, config.llama.localLlamaUrl);
+      }
       const finalResponse = await handleSearchSignal(reqId, message, messages, heavyResponse, config.llama.localLlamaUrl);
       await sendChunked(message, finalResponse);
       return finalResponse;
@@ -395,6 +439,14 @@ async function handleEscalation(reqId, message, messages) {
   // Handle search signal from Model 3 as well
   const searchMatch = SEARCH_SIGNAL_RE.exec(trimmedHeavy);
   if (searchMatch) {
+    if (config.search.enabled === "off") {
+      logger.warn(`[${reqId}] __SEARCH__ signal dropped — SEARCH=off`);
+      return await retryWithoutSearch(reqId, message, heavyMessages, config.llama.localLlamaUrl);
+    }
+    if (config.search.mode === "command") {
+      logger.warn(`[${reqId}] __SEARCH__ auto-signal dropped — SEARCH_MODE=command`);
+      return await retryWithoutSearch(reqId, message, heavyMessages, config.llama.localLlamaUrl);
+    }
     const finalResponse = await handleSearchSignal(
       reqId,
       message,
@@ -488,6 +540,12 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
  * @param {string} query
  */
 export async function handleForcedSearch(message, query) {
+  // Belt-and-suspenders: check at entry point in case called from outside commandHandler
+  if (config.search.enabled === "off") {
+    await message.reply("⚠️ Search is currently disabled.").catch(() => {});
+    return;
+  }
+
   // ── Per-user rate limit (commands bypass the top-level check) ──────────────
   if (!rateLimiter.check(message.author.id)) {
     const retryAfterSec = rateLimitRetrySec(message.author.id);
