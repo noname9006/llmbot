@@ -116,6 +116,16 @@ export function resetActiveModelOnReconnect() {
 export async function switchToCommon() {
   clearHeavyIdleTimer();
 
+  // If common and heavy are the same model file, skip the unload/reload when
+  // switching back from heavy — the model is already loaded.
+  const cFile = config.llama.localModelCommonFile;
+  const hFile = config.llama.localModelHeavyFile;
+  if (cFile && hFile && cFile === hFile && activeLocalModel === "heavy") {
+    logger.info("switchToCommon: common and heavy models are identical — skipping reload");
+    activeLocalModel = "common";
+    return;
+  }
+
   // JS single-thread guarantee: the check and pendingSwitch assignment are
   // atomic from the event-loop perspective — no other caller can sneak between
   // "pendingSwitch is null" and "pendingSwitch = …".
@@ -131,7 +141,10 @@ export async function switchToCommon() {
     // Capture the promise reference so .finally only clears pendingSwitch if
     // it still refers to THIS promise — prevents stomping a new promise that
     // was assigned after resetActiveModelOnReconnect() ran concurrently.
-    const p = agentStart(config.llama.localModelCommonFile)
+    const p = agentStart(config.llama.localModelCommonFile, {
+      extraArgs: config.llama.extraArgsCommon,
+      contextSize: config.llama.contextSizeCommon,
+    })
       .then(() => {
         if (generation === gen) activeLocalModel = "common";
         else logger.debug("switchToCommon: skipping stale state update (generation changed)");
@@ -162,6 +175,17 @@ export async function switchToHeavy() {
     return;
   }
 
+  // If common and heavy are the same model file, skip the unload/reload —
+  // the model is already loaded (as "common"); just re-label it.
+  const cFile = config.llama.localModelCommonFile;
+  const hFile = config.llama.localModelHeavyFile;
+  if (cFile && hFile && cFile === hFile && activeLocalModel === "common") {
+    logger.info("switchToHeavy: common and heavy models are identical — skipping reload");
+    activeLocalModel = "heavy";
+    resetHeavyIdleTimer();
+    return;
+  }
+
   while (activeLocalModel !== "heavy") {
     if (pendingSwitch) {
       await pendingSwitch.catch(() => {});
@@ -171,7 +195,10 @@ export async function switchToHeavy() {
     const gen = generation; // capture before going async
     logger.debug("switchToHeavy: starting /start for heavy model");
     // Same reference-guard pattern as switchToCommon.
-    const p = agentStart(config.llama.localModelHeavyFile)
+    const p = agentStart(config.llama.localModelHeavyFile, {
+      extraArgs: config.llama.extraArgsHeavy,
+      contextSize: config.llama.contextSizeHeavy,
+    })
       .then(() => {
         if (generation === gen) activeLocalModel = "heavy";
         else logger.debug("switchToHeavy: skipping stale state update (generation changed)");
@@ -234,8 +261,11 @@ export function clearHeavyIdleTimer() {
  *
  * @param {string} modelFile  - filename (e.g. "model.gguf"), looked up in the
  *                              agent's configured model directory
+ * @param {object} [options]
+ * @param {string} [options.extraArgs]    - extra CLI args forwarded to llama-server
+ * @param {number} [options.contextSize]  - context size override (0 = server default)
  */
-async function agentStart(modelFile) {
+async function agentStart(modelFile, { extraArgs = "", contextSize = 0 } = {}) {
   const { agentUrl, agentToken } = config.llama;
   if (!agentUrl) {
     throw new Error("LOCAL_AGENT_URL is not configured");
@@ -250,6 +280,11 @@ async function agentStart(modelFile) {
   logger.info(`Agent: starting model "${modelFile}"`);
   const done = logger.timer(`Agent /start (${modelFile})`, "info");
 
+  // Build the request body; only include optional fields when non-empty/non-zero
+  const body = { model: modelFile };
+  if (extraArgs) body.extraArgs = extraArgs;
+  if (contextSize > 0) body.contextSize = contextSize;
+
   try {
     const res = await fetch(`${agentUrl}/start`, {
       method: "POST",
@@ -257,7 +292,7 @@ async function agentStart(modelFile) {
         "Content-Type": "application/json",
         ...(agentToken ? { Authorization: `Bearer ${agentToken}` } : {}),
       },
-      body: JSON.stringify({ model: modelFile }),
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(START_TIMEOUT_MS),
     });
 

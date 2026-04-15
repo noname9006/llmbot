@@ -38,6 +38,40 @@ function loadSystemPromptForRole(role) {
   return loadSystemPrompt();
 }
 
+// ── Pre-computed fallbacks used by per-model config fields ───────────────────
+
+const _extraArgsFallback = optional("LLAMA_EXTRA_ARGS", "");
+
+const _ctxFallback = optional("LLAMA_CONTEXT_SIZE", "0");
+
+const _timeoutFallback = parseInt(optional("LLM_FETCH_TIMEOUT_MS", "120000"), 10);
+
+// Global inference parameter defaults (read once; per-model values fall back here)
+const _llamaGlobals = {
+  temperature:   parseFloat(optional("LLM_TEMPERATURE",        "0.8")),
+  topP:          parseFloat(optional("LLM_TOP_P",              "0.95")),
+  topK:          parseInt(  optional("LLM_TOP_K",              "40"),   10),
+  minP:          parseFloat(optional("LLM_MIN_P",              "0.0")),
+  repeatPenalty: parseFloat(optional("LLM_REPETITION_PENALTY", "1.1")),
+  maxTokens:     parseInt(  optional("LLM_MAX_TOKENS",         "2048"), 10),
+};
+
+/**
+ * Builds per-model inference params, falling back to the global defaults.
+ * Must be called AFTER _llamaGlobals is defined.
+ * @param {'VPS'|'COMMON'|'HEAVY'} suffix  - uppercase role suffix
+ */
+function inferenceParams(suffix) {
+  return {
+    temperature:   parseFloat(optional(`LLM_TEMPERATURE_${suffix}`,    String(_llamaGlobals.temperature))),
+    topP:          parseFloat(optional(`LLM_TOP_P_${suffix}`,          String(_llamaGlobals.topP))),
+    topK:          parseInt(  optional(`LLM_TOP_K_${suffix}`,          String(_llamaGlobals.topK)),   10),
+    minP:          parseFloat(optional(`LLM_MIN_P_${suffix}`,          String(_llamaGlobals.minP))),
+    repeatPenalty: parseFloat(optional(`LLM_REPEAT_PENALTY_${suffix}`, String(_llamaGlobals.repeatPenalty))),
+    maxTokens:     parseInt(  optional(`LLM_MAX_TOKENS_${suffix}`,     String(_llamaGlobals.maxTokens)), 10),
+  };
+}
+
 export const config = {
   discord: {
     token: required("DISCORD_TOKEN"),
@@ -62,15 +96,35 @@ export const config = {
     localModelCommonFile: optional("LOCAL_MODEL_COMMON_FILE", ""),
     localModelHeavyFile: optional("LOCAL_MODEL_HEAVY_FILE", ""),
 
-    // Inference parameters
-    temperature: parseFloat(optional("LLM_TEMPERATURE", "0.8")),
-    topP: parseFloat(optional("LLM_TOP_P", "0.95")),
-    topK: parseInt(optional("LLM_TOP_K", "40"), 10),
-    minP: parseFloat(optional("LLM_MIN_P", "0.0")),
-    repeatPenalty: parseFloat(optional("LLM_REPETITION_PENALTY", "1.1")),
-    maxTokens: parseInt(optional("LLM_MAX_TOKENS", "2048"), 10),
-    // Timeout for a single LLM fetch request in ms (0 = no timeout)
-    fetchTimeoutMs: parseInt(optional("LLM_FETCH_TIMEOUT_MS", "120000"), 10),
+    // Global inference parameters (used as fallback for per-model params below)
+    ..._llamaGlobals,
+
+    // Timeout for a single LLM fetch request in ms (0 = no timeout) — global fallback
+    fetchTimeoutMs: _timeoutFallback,
+
+    // ── Per-model llama.cpp extra args (passed to agent /start) ──────────────
+    // Falls back to LLAMA_EXTRA_ARGS if the role-specific var is not set.
+    extraArgsVps:    optional("LLAMA_EXTRA_ARGS_VPS",    _extraArgsFallback),
+    extraArgsCommon: optional("LLAMA_EXTRA_ARGS_COMMON", _extraArgsFallback),
+    extraArgsHeavy:  optional("LLAMA_EXTRA_ARGS_HEAVY",  _extraArgsFallback),
+
+    // ── Per-model context size (passed to agent /start) ───────────────────────
+    // Falls back to LLAMA_CONTEXT_SIZE if the role-specific var is not set.
+    contextSizeVps:    parseInt(optional("LLAMA_CONTEXT_SIZE_VPS",    _ctxFallback), 10) || 0,
+    contextSizeCommon: parseInt(optional("LLAMA_CONTEXT_SIZE_COMMON", _ctxFallback), 10) || 0,
+    contextSizeHeavy:  parseInt(optional("LLAMA_CONTEXT_SIZE_HEAVY",  _ctxFallback), 10) || 0,
+
+    // ── Per-model fetch timeouts ───────────────────────────────────────────────
+    // Falls back to LLM_FETCH_TIMEOUT_MS if the role-specific var is not set.
+    fetchTimeoutVps:    parseInt(optional("LLM_FETCH_TIMEOUT_MS_VPS",    String(_timeoutFallback)), 10),
+    fetchTimeoutCommon: parseInt(optional("LLM_FETCH_TIMEOUT_MS_COMMON", String(_timeoutFallback)), 10),
+    fetchTimeoutHeavy:  parseInt(optional("LLM_FETCH_TIMEOUT_MS_HEAVY",  String(_timeoutFallback)), 10),
+
+    // ── Per-model inference parameters ────────────────────────────────────────
+    // Each field falls back to the global value if the role-specific var is unset.
+    paramsVps:    inferenceParams("VPS"),
+    paramsCommon: inferenceParams("COMMON"),
+    paramsHeavy:  inferenceParams("HEAVY"),
   },
   llm: {
     systemPrompt: loadSystemPrompt(),           // kept for backward compat

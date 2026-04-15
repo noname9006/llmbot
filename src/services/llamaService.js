@@ -12,6 +12,10 @@ import { withRetry } from "../utils/retry.js";
  * @returns {Promise<string>} - the assistant's response text
  */
 export async function llamaChat(baseUrl, messages, opts = {}) {
+  // Extract fetchTimeout before spreading opts into the API request body.
+  // fetchTimeout is a bot-level control; it must not be sent to llama-server.
+  const { fetchTimeout: optsFetchTimeout, ...bodyOpts } = opts;
+
   const body = {
     messages,
     stream: false,
@@ -21,8 +25,12 @@ export async function llamaChat(baseUrl, messages, opts = {}) {
     min_p: config.llama.minP,
     repeat_penalty: config.llama.repeatPenalty,
     max_tokens: config.llama.maxTokens > 0 ? config.llama.maxTokens : -1,
-    ...opts,
+    ...bodyOpts,
   };
+
+  // Per-call timeout takes priority; falls back to global config.
+  const effectiveTimeoutMs =
+    optsFetchTimeout !== undefined ? optsFetchTimeout : config.llama.fetchTimeoutMs;
 
   logger.debug(`llamaChat → ${baseUrl} messages=${messages.length}`);
 
@@ -32,8 +40,8 @@ export async function llamaChat(baseUrl, messages, opts = {}) {
     return await withRetry(
       async () => {
         const signal =
-          config.llama.fetchTimeoutMs > 0
-            ? AbortSignal.timeout(config.llama.fetchTimeoutMs)
+          effectiveTimeoutMs > 0
+            ? AbortSignal.timeout(effectiveTimeoutMs)
             : undefined;
 
         const res = await fetch(`${baseUrl}/chat/completions`, {

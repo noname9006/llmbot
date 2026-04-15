@@ -14,6 +14,30 @@ import { search } from "../services/searchService.js";
 import { isCommand, handleCommand } from "./commandHandler.js";
 import { createRateLimiter, createSemaphore } from "../utils/rateLimiter.js";
 
+// ── Per-model llamaChat options ───────────────────────────────────────────────
+
+/**
+ * Returns llamaChat opts (API inference params + per-call fetch timeout) for
+ * the given model role.  Callers spread this into their llamaChat opts argument
+ * so the correct params are sent for every role.
+ *
+ * @param {'vps'|'common'|'heavy'} role
+ * @returns {object}
+ */
+function modelOpts(role) {
+  const capRole = role[0].toUpperCase() + role.slice(1); // "Vps" | "Common" | "Heavy"
+  const params  = config.llama[`params${capRole}`];
+  return {
+    temperature:    params.temperature,
+    top_p:          params.topP,
+    top_k:          params.topK,
+    min_p:          params.minP,
+    repeat_penalty: params.repeatPenalty,
+    max_tokens:     params.maxTokens > 0 ? params.maxTokens : -1,
+    fetchTimeout:   config.llama[`fetchTimeout${capRole}`],
+  };
+}
+
 // Leave headroom for edits — Discord's hard limit is 2000 chars
 const STREAM_CHUNK_LIMIT = 1900;
 
@@ -194,7 +218,7 @@ async function routeAndRespond(reqId, message, messages, userText) {
     // ── Route 1: local offline → use VPS Model 1 ───────────────────────────
     logger.info(`[${reqId}] Local agent offline — using VPS model (Model 1)`);
     const vpsMessages = [{ role: "system", content: config.llm.systemPromptVps }, ...messages.slice(1)];
-    const response = stripThinkBlock(await llamaChat(config.llama.vpsUrl, vpsMessages));
+    const response = stripThinkBlock(await llamaChat(config.llama.vpsUrl, vpsMessages, modelOpts("vps")));
     // VPS model should never emit __ESCALATE__; if it does, replace with a
     // safe fallback rather than leaking the raw signal string to the user.
     if (ESCALATE_SIGNAL_RE.test(response.trim())) {
@@ -206,11 +230,11 @@ async function routeAndRespond(reqId, message, messages, userText) {
     if (vpsSearchMatch) {
       if (config.search.enabled === "off") {
         logger.warn(`[${reqId}] __SEARCH__ signal dropped — SEARCH=off`);
-        return await retryWithoutSearch(reqId, message, vpsMessages, config.llama.vpsUrl);
+        return await retryWithoutSearch(reqId, message, vpsMessages, config.llama.vpsUrl, modelOpts("vps"));
       }
       if (config.search.mode === "command") {
         logger.warn(`[${reqId}] __SEARCH__ auto-signal dropped — SEARCH_MODE=command`);
-        return await retryWithoutSearch(reqId, message, vpsMessages, config.llama.vpsUrl);
+        return await retryWithoutSearch(reqId, message, vpsMessages, config.llama.vpsUrl, modelOpts("vps"));
       }
     }
     const finalResponse = await handleSearchSignal(
@@ -218,7 +242,8 @@ async function routeAndRespond(reqId, message, messages, userText) {
       message,
       vpsMessages,
       response,
-      config.llama.vpsUrl
+      config.llama.vpsUrl,
+      modelOpts("vps")
     );
     await sendChunked(message, finalResponse);
     return finalResponse;
@@ -238,7 +263,7 @@ async function routeAndRespond(reqId, message, messages, userText) {
   }
 
   logger.info(`[${reqId}] Local agent online — using Model 2 (common)`);
-  const model2Response = stripThinkBlock(await llamaChat(config.llama.localLlamaUrl, messages));
+  const model2Response = stripThinkBlock(await llamaChat(config.llama.localLlamaUrl, messages, modelOpts("common")));
 
   const trimmed = model2Response.trim();
 
@@ -262,18 +287,19 @@ async function routeAndRespond(reqId, message, messages, userText) {
     // ── Route 4: search signal from Model 2 ──────────────────────────────
     if (config.search.enabled === "off") {
       logger.warn(`[${reqId}] __SEARCH__ signal dropped — SEARCH=off`);
-      return await retryWithoutSearch(reqId, message, messages, config.llama.localLlamaUrl);
+      return await retryWithoutSearch(reqId, message, messages, config.llama.localLlamaUrl, modelOpts("common"));
     }
     if (config.search.mode === "command") {
       logger.warn(`[${reqId}] __SEARCH__ auto-signal dropped — SEARCH_MODE=command`);
-      return await retryWithoutSearch(reqId, message, messages, config.llama.localLlamaUrl);
+      return await retryWithoutSearch(reqId, message, messages, config.llama.localLlamaUrl, modelOpts("common"));
     }
     const finalResponse = await handleSearchSignal(
       reqId,
       message,
       messages,
       model2Response,
-      config.llama.localLlamaUrl
+      config.llama.localLlamaUrl,
+      modelOpts("common")
     );
     await sendChunked(message, finalResponse);
     return finalResponse;
@@ -290,7 +316,7 @@ async function routeAndRespond(reqId, message, messages, userText) {
  * Re-runs the model asking it to answer directly, without searching.
  * Used when search is disabled (SEARCH=off) or suppressed (SEARCH_MODE=command).
  */
-async function retryWithoutSearch(reqId, message, messages, baseUrl) {
+async function retryWithoutSearch(reqId, message, messages, baseUrl, opts = {}) {
   const retryMessages = [
     ...messages,
     {
@@ -298,7 +324,7 @@ async function retryWithoutSearch(reqId, message, messages, baseUrl) {
       content: "Please answer directly without searching. Use only what you already know.",
     },
   ];
-  const retryResponse = stripThinkBlock(await llamaChat(baseUrl, retryMessages));
+  const retryResponse = stripThinkBlock(await llamaChat(baseUrl, retryMessages, opts));
   await sendChunked(message, retryResponse);
   return retryResponse;
 }
@@ -315,7 +341,7 @@ async function retryWithoutEscalation(reqId, message, messages) {
       content: "Please answer the question directly without escalating. Do your best with the information you have.",
     },
   ];
-  const retryResponse = stripThinkBlock(await llamaChat(config.llama.localLlamaUrl, retryMessages));
+  const retryResponse = stripThinkBlock(await llamaChat(config.llama.localLlamaUrl, retryMessages, modelOpts("common")));
   await sendChunked(message, retryResponse);
   return retryResponse;
 }
@@ -338,29 +364,12 @@ async function handleEscalation(reqId, message, messages) {
           "Just say you need to dig deeper, research it, think it through, etc.",
       },
     ];
-    const transitionMsg = stripThinkBlock(await llamaChat(config.llama.localLlamaUrl, transitionMessages));
+    const transitionMsg = stripThinkBlock(await llamaChat(config.llama.localLlamaUrl, transitionMessages, modelOpts("common")));
     await sendChunked(message, transitionMsg);
 
     // Re-run common model with heavy inference params (no model switch)
-    // Read heavy params — use config.llama.heavy if available, else fall back to config.llama globals
-    const heavyParams = config.llama.heavy ?? {
-      temperature:   config.llama.temperature,
-      topP:          config.llama.topP,
-      topK:          config.llama.topK,
-      minP:          config.llama.minP,
-      repeatPenalty: config.llama.repeatPenalty,
-      maxTokens:     config.llama.maxTokens,
-    };
-
     const heavyResponse = stripThinkBlock(
-      await llamaChat(config.llama.localLlamaUrl, messages, {
-        temperature:    heavyParams.temperature,
-        top_p:          heavyParams.topP,
-        top_k:          heavyParams.topK,
-        min_p:          heavyParams.minP,
-        repeat_penalty: heavyParams.repeatPenalty,
-        max_tokens:     heavyParams.maxTokens > 0 ? heavyParams.maxTokens : -1,
-      })
+      await llamaChat(config.llama.localLlamaUrl, messages, modelOpts("heavy"))
     );
 
     // Guard: heavy model response should not contain __ESCALATE__
@@ -375,13 +384,13 @@ async function handleEscalation(reqId, message, messages) {
     if (searchMatch) {
       if (config.search.enabled === "off") {
         logger.warn(`[${reqId}] __SEARCH__ signal dropped — SEARCH=off`);
-        return await retryWithoutSearch(reqId, message, messages, config.llama.localLlamaUrl);
+        return await retryWithoutSearch(reqId, message, messages, config.llama.localLlamaUrl, modelOpts("heavy"));
       }
       if (config.search.mode === "command") {
         logger.warn(`[${reqId}] __SEARCH__ auto-signal dropped — SEARCH_MODE=command`);
-        return await retryWithoutSearch(reqId, message, messages, config.llama.localLlamaUrl);
+        return await retryWithoutSearch(reqId, message, messages, config.llama.localLlamaUrl, modelOpts("heavy"));
       }
-      const finalResponse = await handleSearchSignal(reqId, message, messages, heavyResponse, config.llama.localLlamaUrl);
+      const finalResponse = await handleSearchSignal(reqId, message, messages, heavyResponse, config.llama.localLlamaUrl, modelOpts("heavy"));
       await sendChunked(message, finalResponse);
       return finalResponse;
     }
@@ -411,24 +420,27 @@ async function handleEscalation(reqId, message, messages) {
 
   const transitionMsg = stripThinkBlock(await llamaChat(
     config.llama.localLlamaUrl,
-    transitionMessages
+    transitionMessages,
+    modelOpts("common")
   ));
 
-  // 2. Switch to Model 3 BEFORE posting the transition message.
-  //    If this fails it throws, the caller's catch block handles cleanup, and
-  //    the user never sees a "thinking…" message that leads nowhere.
-  await switchToHeavy();
-
-  // 3. Safe to post transition now that Model 3 is confirmed ready.
+  // 2. Send the transition message to Discord BEFORE switching to the heavy model.
+  //    The common model generated it — we must post it now while common is
+  //    still the active model.
   await sendChunked(message, transitionMsg);
 
-  // 4. Run Model 3 with the full conversation history (using heavy system prompt)
+  // 3. Switch to the heavy model.  If this fails it throws; the caller's catch
+  //    block handles cleanup.  The user has already seen the transition message,
+  //    but an error reply will follow to make it clear something went wrong.
+  await switchToHeavy();
+
+  // 4. Run the heavy model with the full conversation history
   const heavyMessages = [{ role: "system", content: config.llm.systemPromptHeavy }, ...messages.slice(1)];
-  const heavyResponse = stripThinkBlock(await llamaChat(config.llama.localLlamaUrl, heavyMessages));
+  const heavyResponse = stripThinkBlock(await llamaChat(config.llama.localLlamaUrl, heavyMessages, modelOpts("heavy")));
 
   const trimmedHeavy = heavyResponse.trim();
 
-  // Guard: Model 3 should not re-emit __ESCALATE__; replace with fallback
+  // Guard: the heavy model should not re-emit __ESCALATE__; replace with fallback
   // rather than leaking the raw signal string to the user.
   if (ESCALATE_SIGNAL_RE.test(trimmedHeavy)) {
     logger.warn(`[${reqId}] Model 3 emitted __ESCALATE__ — replacing with fallback`);
@@ -441,18 +453,19 @@ async function handleEscalation(reqId, message, messages) {
   if (searchMatch) {
     if (config.search.enabled === "off") {
       logger.warn(`[${reqId}] __SEARCH__ signal dropped — SEARCH=off`);
-      return await retryWithoutSearch(reqId, message, heavyMessages, config.llama.localLlamaUrl);
+      return await retryWithoutSearch(reqId, message, heavyMessages, config.llama.localLlamaUrl, modelOpts("heavy"));
     }
     if (config.search.mode === "command") {
       logger.warn(`[${reqId}] __SEARCH__ auto-signal dropped — SEARCH_MODE=command`);
-      return await retryWithoutSearch(reqId, message, heavyMessages, config.llama.localLlamaUrl);
+      return await retryWithoutSearch(reqId, message, heavyMessages, config.llama.localLlamaUrl, modelOpts("heavy"));
     }
     const finalResponse = await handleSearchSignal(
       reqId,
       message,
       heavyMessages,
       heavyResponse,
-      config.llama.localLlamaUrl
+      config.llama.localLlamaUrl,
+      modelOpts("heavy")
     );
     await sendChunked(message, finalResponse);
     return finalResponse;
@@ -475,9 +488,10 @@ async function handleEscalation(reqId, message, messages) {
  * @param {Array<{role: string, content: string}>} messages  - full history up to this point
  * @param {string} modelResponse  - the raw model response containing the search signal
  * @param {string} baseUrl
+ * @param {object} [opts]  - llamaChat opts (inference params + fetchTimeout) for this role
  * @returns {Promise<string>}  the final answer after search
  */
-async function handleSearchSignal(reqId, message, messages, modelResponse, baseUrl) {
+async function handleSearchSignal(reqId, message, messages, modelResponse, baseUrl, opts = {}) {
   const match = SEARCH_SIGNAL_RE.exec(modelResponse.trim());
   if (!match) return modelResponse;
 
@@ -502,7 +516,7 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
     },
   ];
 
-  const searchAck = stripThinkBlock(await llamaChat(baseUrl, searchAckMessages));
+  const searchAck = stripThinkBlock(await llamaChat(baseUrl, searchAckMessages, opts));
   await sendChunked(message, searchAck);
 
   // 2. Run the SearXNG query
@@ -520,7 +534,7 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
     { role: "user", content: searchResults },
   ];
 
-  const finalResponse = stripThinkBlock(await llamaChat(baseUrl, messagesWithResults));
+  const finalResponse = stripThinkBlock(await llamaChat(baseUrl, messagesWithResults, opts));
 
   // Guard against the model returning another search signal — prevents the
   // raw __SEARCH__: string from leaking to the user as its final reply.
@@ -576,6 +590,7 @@ export async function handleForcedSearch(message, query) {
     const baseUrl = useLocal
       ? config.llama.localLlamaUrl
       : config.llama.vpsUrl;
+    const llmOpts = modelOpts(useLocal ? "common" : "vps");
 
     if (useLocal) {
       await switchToCommon();
@@ -598,7 +613,7 @@ export async function handleForcedSearch(message, query) {
           "Match their capitalization style. Do not mention 'model' or 'AI'.",
       },
     ];
-    const searchAck = stripThinkBlock(await llamaChat(baseUrl, searchAckMessages));
+    const searchAck = stripThinkBlock(await llamaChat(baseUrl, searchAckMessages, llmOpts));
     await sendChunked(message, searchAck);
 
     // Run search
@@ -617,7 +632,7 @@ export async function handleForcedSearch(message, query) {
       { role: "user", content: searchResults },
     ];
 
-    const finalResponse = stripThinkBlock(await llamaChat(baseUrl, messagesWithResults));
+    const finalResponse = stripThinkBlock(await llamaChat(baseUrl, messagesWithResults, llmOpts));
     await sendChunked(message, finalResponse);
 
     // Persist to history
