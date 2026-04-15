@@ -84,6 +84,12 @@ export const config = {
       10
     ),
   },
+  escalate: {
+    enabled: optional("ESCALATE",         "on"),       // "on" | "off"
+    mode:    optional("ESCALATE_MODE",    "auto"),     // "auto" | "command"
+    command: optional("ESCALATE_COMMAND", "!escalate"), // must start with !
+    type:    optional("ESCALATE_TYPE",    "model"),    // "model" | "args"
+  },
   search: {
     searxngBaseUrl: optional("SEARXNG_BASE_URL", ""),
     resultCount: parseInt(optional("SEARCH_RESULT_COUNT", "5"), 10),

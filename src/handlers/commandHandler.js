@@ -7,6 +7,7 @@ import {
 } from "../services/localAvailabilityService.js";
 import { getActiveLocalModel } from "../services/agentService.js";
 import { logger } from "../logger.js";
+import { config } from "../config.js";
 
 /**
  * Returns true if the message is a bot command (starts with !).
@@ -28,9 +29,25 @@ export function isCommand(content) {
  * @returns {Promise<string|null>}
  */
 export async function handleCommand(message, _client, handlers = {}) {
-  const { handleForcedSearch, getSemaphoreStats } = handlers;
+  const { handleForcedSearch, handleForcedEscalation, getSemaphoreStats } = handlers;
   const parts = message.content.trim().slice(1).split(/\s+/);
   const cmd = parts[0];
+
+  // Check for dynamic escalation command
+  const escalateCmd = config.escalate.command.replace(/^!/, "").toLowerCase();
+  if (cmd.toLowerCase() === escalateCmd) {
+    if (config.escalate.enabled !== "on" || config.escalate.mode !== "command") {
+      return "⚠️ Manual escalation is not enabled.";
+    }
+    if (!handleForcedEscalation) {
+      return "⚠️ Escalation handler is not available.";
+    }
+    handleForcedEscalation(message).catch((err) => {
+      logger.error("Unhandled error in escalation command:", err);
+      message.reply("⚠️ An unexpected error occurred during escalation.").catch(() => {});
+    });
+    return null;
+  }
 
   switch (cmd.toLowerCase()) {
     case "reset": {
@@ -97,15 +114,19 @@ export async function handleCommand(message, _client, handlers = {}) {
     }
 
     case "help": {
-      return [
+      const lines = [
         "**Available commands:**",
         "`!reset` — Clear your conversation history",
-        "`!status` — Check local agent availability and active model",
+        "`!status` — Check local agent availability and active model (admins only)",
         "`!search <query>` — Force a web search via SearXNG",
         "`!help` — Show this message",
         "",
         "**Chatting:** Mention me (`@BotName your question`) to start a conversation.",
-      ].join("\n");
+      ];
+      if (config.escalate.enabled === "on" && config.escalate.mode === "command") {
+        lines.splice(3, 0, `\`${config.escalate.command}\` — Escalate to the heavy model`);
+      }
+      return lines.join("\n");
     }
 
     default:
