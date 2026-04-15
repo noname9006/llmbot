@@ -24,6 +24,20 @@ function loadSystemPrompt() {
   );
 }
 
+function loadSystemPromptForRole(role) {
+  try {
+    const filePath = new URL(`../sysprompt_${role}.txt`, import.meta.url);
+    return fs.readFileSync(filePath, "utf-8").trim();
+  } catch {
+    // fall back to role-specific env var
+  }
+  const envKey = `SYSTEM_PROMPT_${role.toUpperCase()}`;
+  if (process.env[envKey]) {
+    return process.env[envKey];
+  }
+  return loadSystemPrompt();
+}
+
 export const config = {
   discord: {
     token: required("DISCORD_TOKEN"),
@@ -59,7 +73,10 @@ export const config = {
     fetchTimeoutMs: parseInt(optional("LLM_FETCH_TIMEOUT_MS", "120000"), 10),
   },
   llm: {
-    systemPrompt: loadSystemPrompt(),
+    systemPrompt: loadSystemPrompt(),           // kept for backward compat
+    systemPromptVps:    loadSystemPromptForRole("vps"),
+    systemPromptCommon: loadSystemPromptForRole("common"),
+    systemPromptHeavy:  loadSystemPromptForRole("heavy"),
   },
   availability: {
     pollIntervalMs: parseInt(

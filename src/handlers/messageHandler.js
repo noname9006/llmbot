@@ -28,7 +28,7 @@ const ESCALATE_SIGNAL_RE = /^__ESCALATE__/;
 
 // User-facing fallback messages for unexpected model signal outputs.
 const MSG_VPS_ESCALATE_FALLBACK =
-  "Sorry, I'm having trouble answering this right now. Please try again later.";
+  "sounds too complicated, unable to process it now, pls try asking later";
 const MSG_HEAVY_ESCALATE_FALLBACK =
   "Sorry, I'm having trouble answering this right now. Please try again later.";
 const MSG_SEARCH_EMPTY_QUERY =
@@ -140,7 +140,7 @@ export async function onMessage(message, client) {
   try {
     // ── Build message history (inside semaphore to avoid dirty-history races) ─
     historyService.pushUser(message.author.id, userText);
-    const messages = historyService.getMessages(message.author.id);
+    const messages = historyService.getMessages(message.author.id, config.llm.systemPromptCommon);
 
     // ── Inject ephemeral capitalization reminder ──────────────────────────────
     const capReminder = buildCapReminder(userText);
@@ -192,7 +192,8 @@ async function routeAndRespond(reqId, message, messages, userText) {
   if (!isLocalAvailable()) {
     // ── Route 1: local offline → use VPS Model 1 ───────────────────────────
     logger.info(`[${reqId}] Local agent offline — using VPS model (Model 1)`);
-    const response = stripThinkBlock(await llamaChat(config.llama.vpsUrl, messages));
+    const vpsMessages = [{ role: "system", content: config.llm.systemPromptVps }, ...messages.slice(1)];
+    const response = stripThinkBlock(await llamaChat(config.llama.vpsUrl, vpsMessages));
     // VPS model should never emit __ESCALATE__; if it does, replace with a
     // safe fallback rather than leaking the raw signal string to the user.
     if (ESCALATE_SIGNAL_RE.test(response.trim())) {
@@ -203,7 +204,7 @@ async function routeAndRespond(reqId, message, messages, userText) {
     const finalResponse = await handleSearchSignal(
       reqId,
       message,
-      messages,
+      vpsMessages,
       response,
       config.llama.vpsUrl
     );
@@ -277,8 +278,9 @@ async function handleEscalation(reqId, message, messages) {
   // 3. Safe to post transition now that Model 3 is confirmed ready.
   await sendChunked(message, transitionMsg);
 
-  // 4. Run Model 3 with the full conversation history
-  const heavyResponse = stripThinkBlock(await llamaChat(config.llama.localLlamaUrl, messages));
+  // 4. Run Model 3 with the full conversation history (using heavy system prompt)
+  const heavyMessages = [{ role: "system", content: config.llm.systemPromptHeavy }, ...messages.slice(1)];
+  const heavyResponse = stripThinkBlock(await llamaChat(config.llama.localLlamaUrl, heavyMessages));
 
   const trimmedHeavy = heavyResponse.trim();
 
@@ -296,7 +298,7 @@ async function handleEscalation(reqId, message, messages) {
     const finalResponse = await handleSearchSignal(
       reqId,
       message,
-      messages,
+      heavyMessages,
       heavyResponse,
       config.llama.localLlamaUrl
     );
@@ -422,7 +424,10 @@ export async function handleForcedSearch(message, query) {
     }
 
     // Get the current history for this user (no new user message pushed)
-    const messages = historyService.getMessages(message.author.id);
+    const messages = historyService.getMessages(
+      message.author.id,
+      useLocal ? config.llm.systemPromptCommon : config.llm.systemPromptVps
+    );
 
     // Post acknowledgement
     const searchAckMessages = [
@@ -529,10 +534,7 @@ function buildCapReminder(text) {
       "User's message is lowercase. Your response must be entirely lowercase.";
   }
 
-  return (
-    `[SYSTEM REMINDER — Capitalization: ${capRule}` +
-    ` | Escalation: if the question requires deep technical explanation, multi-step analysis, or detailed research, respond with ONLY the text __ESCALATE__ — nothing else.]`
-  );
+  return `[SYSTEM REMINDER — Capitalization: ${capRule}]`;
 }
 
 /**
