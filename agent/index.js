@@ -11,9 +11,11 @@ const LLAMA_SERVER_BIN = process.env.LLAMA_SERVER_BIN ?? "llama-server";
 const LLAMA_SERVER_PORT = parseInt(process.env.LLAMA_SERVER_PORT ?? "8081", 10);
 const LLAMA_MODEL_DIR = process.env.LLAMA_MODEL_DIR ?? ".";
 const LLAMA_GPU_LAYERS = process.env.LLAMA_GPU_LAYERS ?? "99";
-const LLAMA_GPU_LAYERS_COMMON = process.env.LLAMA_GPU_LAYERS_COMMON ?? "";
-const LLAMA_GPU_LAYERS_HEAVY  = process.env.LLAMA_GPU_LAYERS_HEAVY  ?? "";
+const LLAMA_EXTRA_ARGS_COMMON = process.env.LLAMA_EXTRA_ARGS_COMMON ?? "";
+const LLAMA_EXTRA_ARGS_HEAVY  = process.env.LLAMA_EXTRA_ARGS_HEAVY  ?? "";
 const LLAMA_CONTEXT_SIZE = process.env.LLAMA_CONTEXT_SIZE ?? "";
+const LLAMA_CONTEXT_SIZE_COMMON = process.env.LLAMA_CONTEXT_SIZE_COMMON ?? "";
+const LLAMA_CONTEXT_SIZE_HEAVY  = process.env.LLAMA_CONTEXT_SIZE_HEAVY  ?? "";
 const LLAMA_EXTRA_ARGS = process.env.LLAMA_EXTRA_ARGS ?? "";
 const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
@@ -65,31 +67,28 @@ const startQueue = [];
  * Waits until the server reports it is ready (listens on the port).
  * Rejects after READY_TIMEOUT_MS if the server doesn't start in time.
  *
- * @param {string} modelFile  - filename (e.g. "model.gguf") inside LLAMA_MODEL_DIR
+ * @param {string} modelFile   - filename (e.g. "model.gguf") inside LLAMA_MODEL_DIR
+ * @param {string} [role]      - model role ("common" | "heavy" | "")
+ * @param {string} [extraArgs] - extra flags passed verbatim to llama-server (space-separated)
+ * @param {number} [contextSize] - context window size (0 = use model default)
  * @returns {Promise<void>}
  */
-function startServer(modelFile, role = "") {
+function startServer(modelFile, role = "", extraArgs = "", contextSize = 0) {
   return new Promise((resolve, reject) => {
     const modelPath = path.join(LLAMA_MODEL_DIR, modelFile);
-
-    let gpuLayers = LLAMA_GPU_LAYERS; // default fallback
-    if (role === "common" && LLAMA_GPU_LAYERS_COMMON) gpuLayers = LLAMA_GPU_LAYERS_COMMON;
-    if (role === "heavy"  && LLAMA_GPU_LAYERS_HEAVY)  gpuLayers = LLAMA_GPU_LAYERS_HEAVY;
 
     const args = [
       "--model", modelPath,
       "--port", String(LLAMA_SERVER_PORT),
       "--host", "0.0.0.0",
-      "-ngl", gpuLayers,
     ];
-    if (LLAMA_CONTEXT_SIZE) {
-      args.push("--ctx-size", LLAMA_CONTEXT_SIZE);
+    if (contextSize > 0) {
+      args.push("--ctx-size", String(contextSize));
     }
-    if (LLAMA_EXTRA_ARGS) {
-      args.push(...LLAMA_EXTRA_ARGS.trim().split(/\s+/));
+    if (extraArgs) {
+      args.push(...extraArgs.trim().split(/\s+/));
     }
 
-    logger.info(`GPU layers: ${gpuLayers} (role: ${role || "default"})`);
     logger.info(`Spawning llama-server: ${LLAMA_SERVER_BIN} ${args.join(" ")}`);
 
     const proc = spawn(LLAMA_SERVER_BIN, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -290,8 +289,24 @@ app.post("/start", async (req, res) => {
   const rawRole = typeof req.body?.role === "string" ? req.body.role : "";
   const role = (rawRole === "common" || rawRole === "heavy") ? rawRole : "";
   if (rawRole && !role) {
-    logger.warn(`/start received unrecognized role "${rawRole}" — falling back to default GPU layers`);
+    logger.warn(`/start received unrecognized role "${rawRole}" — treating as no role`);
   }
+
+  // Resolve extraArgs: agent per-model env (highest) > bot-sent value > agent global fallback
+  const envExtraArgs = role === "common" ? LLAMA_EXTRA_ARGS_COMMON
+                     : role === "heavy"  ? LLAMA_EXTRA_ARGS_HEAVY
+                     : "";
+  const bodyExtraArgs = typeof req.body?.extraArgs === "string" ? req.body.extraArgs.trim() : "";
+  const extraArgs = envExtraArgs || bodyExtraArgs || LLAMA_EXTRA_ARGS;
+
+  // Resolve contextSize: agent per-model env (highest) > bot-sent value > agent global fallback
+  const envContextSize = role === "common" ? LLAMA_CONTEXT_SIZE_COMMON
+                       : role === "heavy"  ? LLAMA_CONTEXT_SIZE_HEAVY
+                       : "";
+  const bodyContextSize = typeof req.body?.contextSize === "number" ? req.body.contextSize : 0;
+  const contextSize = envContextSize ? (parseInt(envContextSize, 10) || 0)
+                    : bodyContextSize > 0 ? bodyContextSize
+                    : (parseInt(LLAMA_CONTEXT_SIZE, 10) || 0);
 
   // ── Mutex: queue concurrent requests rather than spawning multiple processes ─
   if (startInProgress) {
@@ -313,7 +328,7 @@ app.post("/start", async (req, res) => {
       await stopServer();
     }
 
-    await startServer(modelFile, role);
+    await startServer(modelFile, role, extraArgs, contextSize);
     res.json({ status: "ok", model: modelFile, port: LLAMA_SERVER_PORT });
 
     // Notify all queued callers that the start completed successfully
