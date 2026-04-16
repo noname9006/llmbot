@@ -147,6 +147,8 @@ System prompts are loaded from files, not environment variables. See [Setup → 
 
 These are passed to `llama-server` when the agent starts a model. The global `LLAMA_EXTRA_ARGS` is used as a fallback when a role-specific var is not set.
 
+When using the **Windows local agent**, per-model extra args can also be set in the **agent's** `.env` (`LLAMA_EXTRA_ARGS_COMMON`, `LLAMA_EXTRA_ARGS_HEAVY`) and will take priority over bot-sent values. Include `-ngl <N>` in those vars to control GPU layer offload per model.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LLAMA_EXTRA_ARGS` | *(empty)* | Global fallback extra args for llama-server |
@@ -231,15 +233,25 @@ See [`gemma4.md`](./gemma4.md) for a full Gemma 4 setup and hardware guide.
 
 Key points for running Gemma 4 with this bot:
 
-- **Enable thinking mode** by passing `--chat-template-kwargs '{"enable_thinking":true}'` to llama-server. Set this via `LLAMA_EXTRA_ARGS_COMMON` and `LLAMA_EXTRA_ARGS_HEAVY` in your `.env`:
+- **Enable thinking mode** by passing `--chat-template-kwargs '{"enable_thinking":true}'` to llama-server. Set this via `LLAMA_EXTRA_ARGS_COMMON` and `LLAMA_EXTRA_ARGS_HEAVY`.
 
-  **Linux / bash:**
+  When using the **Windows local agent**, the preferred place is the **agent's** `.env` (agent-side values take priority over bot-sent values):
+
+  **Windows PowerShell** (in `agent/.env`):
+  ```
+  LLAMA_EXTRA_ARGS_COMMON=--chat-template-kwargs "{\"enable_thinking\":true}"
+  LLAMA_EXTRA_ARGS_HEAVY=--chat-template-kwargs "{\"enable_thinking\":true}"
+  ```
+
+  Alternatively, set them in the **bot's** `.env` (used as a fallback when the agent doesn't override):
+
+  **Linux / bash** (in bot `.env`):
   ```
   LLAMA_EXTRA_ARGS_COMMON=--chat-template-kwargs '{"enable_thinking":true}'
   LLAMA_EXTRA_ARGS_HEAVY=--chat-template-kwargs '{"enable_thinking":true}'
   ```
 
-  **Windows PowerShell** (the agent reads these from its own `.env`):
+  **Windows PowerShell** (in bot `.env`):
   ```
   LLAMA_EXTRA_ARGS_COMMON=--chat-template-kwargs "{\"enable_thinking\":true}"
   LLAMA_EXTRA_ARGS_HEAVY=--chat-template-kwargs "{\"enable_thinking\":true}"
