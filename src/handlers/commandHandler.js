@@ -33,6 +33,8 @@ export async function handleCommand(message, _client, handlers = {}) {
   const parts = message.content.trim().slice(1).split(/\s+/);
   const cmd = parts[0];
 
+  logger.debug(`[${message.author.tag}] command dispatched: "${cmd}"`);
+
   // Check for dynamic escalation command
   const escalateCmd = config.escalate.command.replace(/^!/, "").toLowerCase();
   if (cmd.toLowerCase() === escalateCmd) {
@@ -42,6 +44,7 @@ export async function handleCommand(message, _client, handlers = {}) {
     if (!handleForcedEscalation) {
       return "⚠️ Escalation handler is not available.";
     }
+    logger.info(`[${message.author.tag}] escalation command received`);
     handleForcedEscalation(message).catch((err) => {
       logger.error("Unhandled error in escalation command:", err);
       message.reply("⚠️ An unexpected error occurred during escalation.").catch(() => {});
@@ -62,6 +65,7 @@ export async function handleCommand(message, _client, handlers = {}) {
     if (!handleForcedSearch) {
       return "⚠️ Search handler is not available.";
     }
+    logger.info(`[${message.author.tag}] search command received: "${query.slice(0, 80)}"`);
     // handleForcedSearch sends its own replies
     handleForcedSearch(message, query).catch((err) => {
       logger.error(`Unhandled error in ${config.search.command}:`, err);

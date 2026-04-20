@@ -106,6 +106,7 @@ export async function onMessage(message, client) {
 
   // ── Commands (no mention required) ─────────────────────────────────────────
   if (isCommand(message.content)) {
+    logger.debug(`[${message.author.tag}] command detected: "${message.content.trim().split(/\s+/)[0]}"`);
     const reply = await handleCommand(message, client, {
       handleForcedSearch,
       handleForcedEscalation,
@@ -216,8 +217,10 @@ export async function onMessage(message, client) {
 async function routeAndRespond(reqId, message, messages, userText) {
   if (!isLocalAvailable()) {
     // ── Route 1: local offline → use VPS Model 1 ───────────────────────────
+    logger.debug(`[${reqId}] local agent offline — route 1 (VPS model) selected`);
     logger.info(`[${reqId}] Local agent offline — using VPS model (Model 1)`);
     const vpsMessages = [{ role: "system", content: config.llm.systemPromptVps }, ...messages.slice(1)];
+    logger.debug(`[${reqId}] messages for LLM: ${vpsMessages.length} (${Math.floor((vpsMessages.length - 1) / 2)} user/assistant pairs)`);
     const response = stripThinkBlock(await llamaChat(config.llama.vpsUrl, vpsMessages, modelOpts("vps")));
     // VPS model should never emit __ESCALATE__; if it does, replace with a
     // safe fallback rather than leaking the raw signal string to the user.
@@ -229,13 +232,16 @@ async function routeAndRespond(reqId, message, messages, userText) {
     const vpsSearchMatch = SEARCH_SIGNAL_RE.exec(response.trim());
     if (vpsSearchMatch) {
       if (config.search.enabled === "off") {
+        logger.debug(`[${reqId}] __SEARCH__ detected — SEARCH=off, dropping`);
         logger.warn(`[${reqId}] __SEARCH__ signal dropped — SEARCH=off`);
         return await retryWithoutSearch(reqId, message, vpsMessages, config.llama.vpsUrl, modelOpts("vps"));
       }
       if (config.search.mode === "command") {
+        logger.debug(`[${reqId}] __SEARCH__ detected — mode=command, dropping`);
         logger.warn(`[${reqId}] __SEARCH__ auto-signal dropped — SEARCH_MODE=command`);
         return await retryWithoutSearch(reqId, message, vpsMessages, config.llama.vpsUrl, modelOpts("vps"));
       }
+      logger.debug(`[${reqId}] __SEARCH__ detected — mode=auto, searching`);
     }
     const finalResponse = await handleSearchSignal(
       reqId,
@@ -250,6 +256,7 @@ async function routeAndRespond(reqId, message, messages, userText) {
   }
 
   // ── Route 2: local online → use Model 2 (common) ─────────────────────────
+  logger.debug(`[${reqId}] local agent online — route 2 (common model) selected`);
   await switchToCommon();
 
   // Check for manual escalation command (only when local is online)
@@ -263,6 +270,7 @@ async function routeAndRespond(reqId, message, messages, userText) {
   }
 
   logger.info(`[${reqId}] Local agent online — using Model 2 (common)`);
+  logger.debug(`[${reqId}] messages for LLM: ${messages.length} (${Math.floor((messages.length - 1) / 2)} user/assistant pairs)`);
   const model2Response = stripThinkBlock(await llamaChat(config.llama.localLlamaUrl, messages, modelOpts("common")));
 
   const trimmed = model2Response.trim();
@@ -270,15 +278,18 @@ async function routeAndRespond(reqId, message, messages, userText) {
   if (ESCALATE_SIGNAL_RE.test(trimmed)) {
     // ── Route 3: escalation → Model 3 ────────────────────────────────────
     if (config.escalate.enabled === "off") {
+      logger.debug(`[${reqId}] __ESCALATE__ detected — ESCALATE=off, dropping`);
       logger.warn(`[${reqId}] __ESCALATE__ signal dropped — ESCALATE=off`);
       return await retryWithoutEscalation(reqId, message, messages);
     }
 
     if (config.escalate.mode === "command") {
+      logger.debug(`[${reqId}] __ESCALATE__ detected — mode=command, dropping`);
       logger.warn(`[${reqId}] __ESCALATE__ auto-signal dropped — ESCALATE_MODE=command`);
       return await retryWithoutEscalation(reqId, message, messages);
     }
 
+    logger.debug(`[${reqId}] __ESCALATE__ detected — mode=auto, escalating`);
     return await handleEscalation(reqId, message, messages);
   }
 
@@ -286,13 +297,16 @@ async function routeAndRespond(reqId, message, messages, userText) {
   if (searchMatch) {
     // ── Route 4: search signal from Model 2 ──────────────────────────────
     if (config.search.enabled === "off") {
+      logger.debug(`[${reqId}] __SEARCH__ detected — SEARCH=off, dropping`);
       logger.warn(`[${reqId}] __SEARCH__ signal dropped — SEARCH=off`);
       return await retryWithoutSearch(reqId, message, messages, config.llama.localLlamaUrl, modelOpts("common"));
     }
     if (config.search.mode === "command") {
+      logger.debug(`[${reqId}] __SEARCH__ detected — mode=command, dropping`);
       logger.warn(`[${reqId}] __SEARCH__ auto-signal dropped — SEARCH_MODE=command`);
       return await retryWithoutSearch(reqId, message, messages, config.llama.localLlamaUrl, modelOpts("common"));
     }
+    logger.debug(`[${reqId}] __SEARCH__ detected — mode=auto, searching`);
     const finalResponse = await handleSearchSignal(
       reqId,
       message,
@@ -317,6 +331,7 @@ async function routeAndRespond(reqId, message, messages, userText) {
  * Used when search is disabled (SEARCH=off) or suppressed (SEARCH_MODE=command).
  */
 async function retryWithoutSearch(reqId, message, messages, baseUrl, opts = {}) {
+  logger.debug(`[${reqId}] retryWithoutSearch — re-running without search context`);
   const retryMessages = [
     ...messages,
     {
@@ -334,6 +349,7 @@ async function retryWithoutSearch(reqId, message, messages, baseUrl, opts = {}) 
  * Used when escalation is disabled (ESCALATE=off) or suppressed (ESCALATE_MODE=command).
  */
 async function retryWithoutEscalation(reqId, message, messages) {
+  logger.debug(`[${reqId}] retryWithoutEscalation — re-running without escalation`);
   const retryMessages = [
     ...messages,
     {
@@ -348,6 +364,7 @@ async function retryWithoutEscalation(reqId, message, messages) {
 
 async function handleEscalation(reqId, message, messages) {
   if (config.escalate.type === "args") {
+    logger.debug(`[${reqId}] escalation type=args: re-running with heavy params on common model`);
     logger.info(`[${reqId}] Escalation type=args — using heavy params on common model (no model swap)`);
 
     // Still generate a transition message from common model (same UX)
@@ -501,6 +518,7 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
     logger.warn(`[${reqId}] Search signal with empty query — skipping search`);
     return MSG_SEARCH_EMPTY_QUERY;
   }
+  logger.debug(`[${reqId}] handleSearchSignal: query="${query}" url=${baseUrl}`);
   logger.info(`[${reqId}] Search signal detected: "${query}" (url: ${baseUrl})`);
 
   // 1. Generate a "I'm searching for X" message using the same endpoint
@@ -664,12 +682,14 @@ export async function handleForcedEscalation(message) {
     return;
   }
 
+  const reqId = randomUUID().slice(0, 8);
+
   if (!isLocalAvailable()) {
+    logger.info(`[${reqId}] Forced escalation attempted but local agent is offline — aborting`);
     await message.reply("⚠️ Local agent is offline — escalation is not available right now.").catch(() => {});
     return;
   }
 
-  const reqId = randomUUID().slice(0, 8);
   logger.info(`[${reqId}] Forced escalation command from ${message.author.tag}`);
 
   await message.channel.sendTyping();

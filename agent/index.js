@@ -308,6 +308,18 @@ app.post("/start", async (req, res) => {
                     : bodyContextSize > 0 ? bodyContextSize
                     : (parseInt(LLAMA_CONTEXT_SIZE, 10) || 0);
 
+  logger.debug(`/start resolved: role="${role}" extraArgs="${extraArgs}" contextSize=${contextSize}`);
+
+  // Log any inference params present in the request body
+  const inferenceKeys = ["temperature", "top_p", "top_k", "min_p", "repeat_penalty", "max_tokens"];
+  const bodyInferenceParams = inferenceKeys
+    .filter((k) => req.body?.[k] !== undefined && req.body[k] !== null)
+    .map((k) => `${k}=${req.body[k]}`)
+    .join(" ");
+  if (bodyInferenceParams) {
+    logger.debug(`/start inference params from bot: ${bodyInferenceParams}`);
+  }
+
   // ── Mutex: queue concurrent requests rather than spawning multiple processes ─
   if (startInProgress) {
     logger.info(`/start queued (another start is in progress): model="${modelFile}"`);
@@ -368,6 +380,11 @@ app.listen(PORT, () => {
   if (!AGENT_TOKEN) {
     logger.warn("AGENT_TOKEN is not set — agent is unprotected!");
   }
+  logger.debug(`Log level: ${LOG_LEVEL}`);
+  logger.debug(`Extra args (common): ${LLAMA_EXTRA_ARGS_COMMON || "(none)"}`);
+  logger.debug(`Extra args (heavy):  ${LLAMA_EXTRA_ARGS_HEAVY || "(none)"}`);
+  logger.debug(`Context size (common): ${LLAMA_CONTEXT_SIZE_COMMON || "(default)"}`);
+  logger.debug(`Context size (heavy):  ${LLAMA_CONTEXT_SIZE_HEAVY || "(default)"}`);
 });
 
 // ── Graceful shutdown ─────────────────────────────────────────────────────────

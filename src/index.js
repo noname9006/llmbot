@@ -11,6 +11,21 @@ logger.info(`Local llama-server: ${config.llama.localLlamaUrl || "(not configure
 logger.info(`  Common model: ${config.llama.localModelCommonFile || "(not configured)"}`);
 logger.info(`  Heavy model:  ${config.llama.localModelHeavyFile || "(not configured)"}`);
 
+// ── Effective runtime config summary ─────────────────────────────────────────
+const searchStatus = config.search.enabled === "off"
+  ? "disabled"
+  : `enabled (mode: ${config.search.mode}, cmd: ${config.search.command})`;
+logger.info(`Search: ${searchStatus}`);
+
+const escalateStatus = config.escalate.enabled !== "on"
+  ? "disabled"
+  : `enabled (mode: ${config.escalate.mode}, cmd: ${config.escalate.command}, type: ${config.escalate.type})`;
+logger.info(`Escalation: ${escalateStatus}`);
+
+logger.debug(`Log level: ${config.logLevel}`);
+logger.debug(`Rate limit: ${config.rateLimit.maxRequests} req / ${config.rateLimit.windowMs} ms window, max concurrent: ${config.rateLimit.maxConcurrent}`);
+logger.debug(`History: max ${config.history.maxPairs} pairs`);
+
 const client = createBot();
 
 // Login
