@@ -10,11 +10,28 @@ import { logger } from "../logger.js";
 import { config } from "../config.js";
 
 /**
- * Returns true if the message is a bot command (starts with !).
+ * Returns the set of known command tokens (lowercased, with leading !).
+ * @returns {Set<string>}
+ */
+function getKnownCommands() {
+  return new Set([
+    config.escalate.command.toLowerCase(),
+    config.search.command.toLowerCase(),
+    "!reset",
+    "!status",
+    "!help",
+  ]);
+}
+
+/**
+ * Returns true if the message contains a known command token anywhere.
+ * Only tokens that exactly match a known command name trigger this — unknown
+ * `!word` tokens (e.g. `!defi`) are ignored so they fall through to chat.
  * @param {string} content
  */
 export function isCommand(content) {
-  return content.trim().startsWith("!");
+  const known = getKnownCommands();
+  return content.trim().split(/\s+/).some((token) => known.has(token.toLowerCase()));
 }
 
 /**
@@ -30,14 +47,17 @@ export function isCommand(content) {
  */
 export async function handleCommand(message, _client, handlers = {}) {
   const { handleForcedSearch, handleForcedEscalation, getSemaphoreStats } = handlers;
-  const parts = message.content.trim().slice(1).split(/\s+/);
-  const cmd = parts[0];
+  const words = message.content.trim().split(/\s+/);
+  const known = getKnownCommands();
+  const cmdToken = words.find((w) => known.has(w.toLowerCase()));
+  if (!cmdToken) return null;
+  const cmd = cmdToken.replace(/^!/, "").toLowerCase();
 
   logger.debug(`[${message.author.tag}] command dispatched: "${cmd}"`);
 
   // Check for dynamic escalation command
   const escalateCmd = config.escalate.command.replace(/^!/, "").toLowerCase();
-  if (cmd.toLowerCase() === escalateCmd) {
+  if (cmd === escalateCmd) {
     if (config.escalate.enabled !== "on" || config.escalate.mode !== "command") {
       return "⚠️ Manual escalation is not enabled.";
     }
@@ -54,11 +74,15 @@ export async function handleCommand(message, _client, handlers = {}) {
 
   // Check for dynamic search command
   const searchCmd = config.search.command.replace(/^!/, "").toLowerCase();
-  if (cmd.toLowerCase() === searchCmd) {
+  if (cmd === searchCmd) {
     if (config.search.enabled === "off") {
       return "⚠️ Search is currently disabled.";
     }
-    const query = parts.slice(1).join(" ").trim();
+    // Query = all words except the !search token itself and any mention tokens
+    const query = words
+      .filter((w) => !/<@!?\d+>/.test(w) && w.toLowerCase() !== cmdToken.toLowerCase())
+      .join(" ")
+      .trim();
     if (!query) {
       return `Usage: \`${config.search.command} <query>\``;
     }
@@ -74,7 +98,7 @@ export async function handleCommand(message, _client, handlers = {}) {
     return null;
   }
 
-  switch (cmd.toLowerCase()) {
+  switch (cmd) {
     case "reset": {
       historyService.reset(message.author.id);
       logger.info(`History reset for user ${message.author.tag}`);
