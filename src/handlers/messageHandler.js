@@ -106,7 +106,7 @@ export async function onMessage(message, client) {
 
   // ── Commands (no mention required) ─────────────────────────────────────────
   if (isCommand(message.content)) {
-    logger.debug(`[${message.author.tag}] command detected: "${message.content.trim().split(/\s+/)[0]}"`);
+    logger.debug(`[${message.author.tag}] command detected in: "${message.content.trim().slice(0, 80)}"`);
     const reply = await handleCommand(message, client, {
       handleForcedSearch,
       handleForcedEscalation,
@@ -263,7 +263,7 @@ async function routeAndRespond(reqId, message, messages, userText) {
   if (
     config.escalate.enabled === "on" &&
     config.escalate.mode === "command" &&
-    userText.trim().toLowerCase().split(/\s+/)[0] === config.escalate.command.toLowerCase()
+    userText.trim().toLowerCase().split(/\s+/).includes(config.escalate.command.toLowerCase())
   ) {
     logger.info(`[${reqId}] Manual escalation command detected`);
     return await handleEscalation(reqId, message, messages);
@@ -698,6 +698,19 @@ export async function handleForcedEscalation(message) {
   await semaphore.acquire();
   try {
     await switchToCommon();
+
+    // Strip command token and mentions from the raw message, then push any
+    // remaining text as the user's question so handleEscalation has context.
+    const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const questionText = message.content
+      .replace(/<@!?\d+>/g, "")
+      .replace(new RegExp(escapeRegex(config.escalate.command), "gi"), "")
+      .replace(/\s{2,}/g, " ")
+      .trim();
+    if (questionText) {
+      historyService.pushUser(message.author.id, questionText);
+    }
+
     const messages = historyService.getMessages(message.author.id, config.llm.systemPromptCommon);
     const fullResponse = await handleEscalation(reqId, message, messages);
     historyService.pushAssistant(message.author.id, fullResponse);
