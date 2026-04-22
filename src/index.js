@@ -3,6 +3,7 @@ import { logger } from "./logger.js";
 import { createBot } from "./bot.js";
 import { getSemaphoreStats } from "./handlers/messageHandler.js";
 import { clearHeavyIdleTimer } from "./services/agentService.js";
+import { startVpsLlamaServer, stopVpsLlamaServer } from "./services/vpsLlamaProcess.js";
 
 logger.info("Starting discord-llm-bot...");
 logger.info(`VPS llama-server: ${config.llama.vpsUrl} (model: ${config.llama.vpsModelFile})`);
@@ -27,6 +28,14 @@ logger.debug(`Rate limit: ${config.rateLimit.maxRequests} req / ${config.rateLim
 logger.debug(`History: max ${config.history.maxPairs} pairs`);
 
 const client = createBot();
+
+// Start VPS llama-server before connecting to Discord
+try {
+  await startVpsLlamaServer();
+} catch (err) {
+  logger.error("Failed to start VPS llama-server:", err);
+  process.exit(1);
+}
 
 // Login
 client.login(config.discord.token).catch((err) => {
@@ -60,6 +69,8 @@ async function shutdown(signal) {
   // Cancel the heavy-model idle timer so it cannot fire an agentStop() call
   // after the process has started tearing down.
   clearHeavyIdleTimer();
+
+  await stopVpsLlamaServer();
 
   logger.info("Shutdown complete — disconnecting from Discord");
   client.destroy();

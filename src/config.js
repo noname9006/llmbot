@@ -82,6 +82,14 @@ export const config = {
       .map((s) => s.trim())
       .filter(Boolean),
   },
+  vpsLlama: {
+    // Set to false to skip auto-launching llama-server (manage it externally instead)
+    enabled: optional("VPS_LLAMA_ENABLED", "true") !== "false",
+    // Path to the llama-server binary
+    bin: optional("VPS_LLAMA_BIN", "./llama/llama-server"),
+    // Full path to the GGUF model file for the VPS instance (required when enabled)
+    modelPath: optional("VPS_MODEL_PATH", ""),
+  },
   llama: {
     // VPS llama-server — always on, always available (Model 1 / fallback)
     vpsUrl: optional("VPS_LLAMA_URL", "http://localhost:8080/v1"),
