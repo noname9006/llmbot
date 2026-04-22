@@ -44,6 +44,20 @@ cp .env.example .env
 
 Edit `.env` and fill in all required values. See the [Environment Variables](#environment-variables) section for a full reference.
 
+### 2a. VPS llama-server binary (VPS only)
+
+Place the `llama-server` binary in the `llama/` directory at the project root:
+
+```bash
+mkdir -p llama
+cp /path/to/llama-server llama/
+chmod +x llama/llama-server
+```
+
+Set `VPS_MODEL_PATH` in `.env` to the full path of the GGUF model you want the VPS instance to use.
+The bot will start and stop `llama-server` automatically on launch/shutdown.
+To manage `llama-server` externally instead, set `VPS_LLAMA_ENABLED=false`.
+
 ### 3. System prompts
 
 The bot loads a separate system prompt file for each model role:
@@ -102,6 +116,9 @@ Copy `.env.example` to `.env` and edit it. Variables marked **required** have no
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `VPS_LLAMA_URL` | `http://localhost:8080/v1` | Base URL of the VPS llama-server OpenAI-compatible API |
+| `VPS_LLAMA_ENABLED` | `true` | Set to `false` to skip auto-launching llama-server (e.g. if it's managed externally) |
+| `VPS_LLAMA_BIN` | `./llama/llama-server` | Path to the llama-server binary |
+| `VPS_MODEL_PATH` | *(empty — required when enabled)* | Full path to the GGUF model file to load into the VPS llama-server |
 | `LOCAL_LLAMA_URL` | *(empty)* | Direct URL of the local llama-server on the Windows machine (same Tailscale IP as the agent, different port) |
 
 ### Model files
