@@ -358,6 +358,11 @@ async function retryWithoutEscalation(reqId, message, messages) {
     },
   ];
   const retryResponse = stripThinkBlock(await llamaChat(config.llama.localLlamaUrl, retryMessages, modelOpts("common")));
+  if (ESCALATE_SIGNAL_RE.test(retryResponse.trim())) {
+    logger.warn(`[${reqId}] retryWithoutEscalation response still contained __ESCALATE__ — using fallback`);
+    await sendChunked(message, MSG_HEAVY_ESCALATE_FALLBACK);
+    return MSG_HEAVY_ESCALATE_FALLBACK;
+  }
   await sendChunked(message, retryResponse);
   return retryResponse;
 }
@@ -384,9 +389,10 @@ async function handleEscalation(reqId, message, messages) {
     const transitionMsg = stripThinkBlock(await llamaChat(config.llama.localLlamaUrl, transitionMessages, modelOpts("common")));
     await sendChunked(message, transitionMsg);
 
-    // Re-run common model with heavy inference params (no model switch)
+    // Re-run with heavy inference params using systemPromptHeavy (no __ESCALATE__ definition)
+    const heavyMessages = [{ role: "system", content: config.llm.systemPromptHeavy }, ...messages.slice(1)];
     const heavyResponse = stripThinkBlock(
-      await llamaChat(config.llama.localLlamaUrl, messages, modelOpts("heavy"))
+      await llamaChat(config.llama.localLlamaUrl, heavyMessages, modelOpts("heavy"))
     );
 
     // Guard: heavy model response should not contain __ESCALATE__
