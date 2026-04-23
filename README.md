@@ -213,6 +213,8 @@ Each global parameter has per-model overrides (`_VPS`, `_COMMON`, `_HEAVY`). Per
 | `LLM_REPEAT_PENALTY_COMMON` / `_HEAVY` / `_VPS` | *(falls back to `LLM_REPEAT_PENALTY`)* | Per-model repetition penalty override |
 | `LLM_MAX_TOKENS` | `2048` | Max tokens per response (`-1` = unlimited) |
 | `LLM_MAX_TOKENS_COMMON` / `_HEAVY` / `_VPS` | *(falls back to `LLM_MAX_TOKENS`)* | Per-model max tokens override |
+| `LLM_REASONING_BUDGET` | `-1` (disabled) | Max reasoning/thinking tokens (`budget_tokens`). `-1` = not sent (model default). `0` = disable reasoning. Positive = token cap. |
+| `LLM_REASONING_BUDGET_COMMON` / `_HEAVY` / `_VPS` | *(falls back to `LLM_REASONING_BUDGET`)* | Per-model reasoning budget override |
 
 ### History
 

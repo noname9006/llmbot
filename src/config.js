@@ -114,7 +114,8 @@ const _llamaGlobals = {
   repeatPenalty: parseFloat(
     optional("LLM_REPEAT_PENALTY", optional("LLM_REPETITION_PENALTY", "1.1"))
   ),
-  maxTokens:     parseInt(  optional("LLM_MAX_TOKENS",         "2048"), 10),
+  maxTokens:      parseInt(  optional("LLM_MAX_TOKENS",         "2048"), 10),
+  reasoningBudget: parseInt( optional("LLM_REASONING_BUDGET",   "-1"),   10),
 };
 
 /**
@@ -129,7 +130,8 @@ function inferenceParams(suffix) {
     topK:          parseInt(  optional(`LLM_TOP_K_${suffix}`,          String(_llamaGlobals.topK)),   10),
     minP:          parseFloat(optional(`LLM_MIN_P_${suffix}`,          String(_llamaGlobals.minP))),
     repeatPenalty: parseFloat(optional(`LLM_REPEAT_PENALTY_${suffix}`, String(_llamaGlobals.repeatPenalty))),
-    maxTokens:     parseInt(  optional(`LLM_MAX_TOKENS_${suffix}`,     String(_llamaGlobals.maxTokens)), 10),
+    maxTokens:      parseInt(  optional(`LLM_MAX_TOKENS_${suffix}`,      String(_llamaGlobals.maxTokens)),      10),
+    reasoningBudget: parseInt( optional(`LLM_REASONING_BUDGET_${suffix}`, String(_llamaGlobals.reasoningBudget)), 10),
   };
 }
 

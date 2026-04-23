@@ -34,6 +34,7 @@ function modelOpts(role) {
     min_p:          params.minP,
     repeat_penalty: params.repeatPenalty,
     max_tokens:     params.maxTokens > 0 ? params.maxTokens : -1,
+    ...(params.reasoningBudget >= 0 ? { budget_tokens: params.reasoningBudget } : {}),
     fetchTimeout:   config.llama[`fetchTimeout${capRole}`],
   };
 }
