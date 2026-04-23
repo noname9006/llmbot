@@ -50,6 +50,10 @@ const SEARCH_SIGNAL_RE = /^__SEARCH__:\s*([^\n]+)/;
 // appends trailing commentary (e.g. "__ESCALATE__ because this is complex").
 const ESCALATE_SIGNAL_RE = /^__ESCALATE__/;
 
+// Regex used to strip leaked signal tokens from model output before sending
+// to Discord.  Matches __ESCALATE__ anywhere, and __SEARCH__: <rest of line>.
+const SIGNAL_STRIP_RE = /__ESCALATE__|__SEARCH__:[^\n]*/g;
+
 // User-facing fallback messages for unexpected model signal outputs.
 const MSG_VPS_ESCALATE_FALLBACK =
   "sounds too complicated, unable to process it now, pls try asking later";
@@ -340,6 +344,11 @@ async function retryWithoutSearch(reqId, message, messages, baseUrl, opts = {}) 
     },
   ];
   const retryResponse = stripThinkBlock(await llamaChat(baseUrl, retryMessages, opts));
+  if (ESCALATE_SIGNAL_RE.test(retryResponse.trim())) {
+    logger.warn(`[${reqId}] retryWithoutSearch response contained __ESCALATE__ — using fallback`);
+    await sendChunked(message, MSG_HEAVY_ESCALATE_FALLBACK);
+    return MSG_HEAVY_ESCALATE_FALLBACK;
+  }
   await sendChunked(message, retryResponse);
   return retryResponse;
 }
@@ -407,11 +416,11 @@ async function handleEscalation(reqId, message, messages) {
     if (searchMatch) {
       if (config.search.enabled === "off") {
         logger.warn(`[${reqId}] __SEARCH__ signal dropped — SEARCH=off`);
-        return await retryWithoutSearch(reqId, message, messages, config.llama.localLlamaUrl, modelOpts("heavy"));
+        return await retryWithoutSearch(reqId, message, heavyMessages, config.llama.localLlamaUrl, modelOpts("heavy"));
       }
       if (config.search.mode === "command") {
         logger.warn(`[${reqId}] __SEARCH__ auto-signal dropped — SEARCH_MODE=command`);
-        return await retryWithoutSearch(reqId, message, messages, config.llama.localLlamaUrl, modelOpts("heavy"));
+        return await retryWithoutSearch(reqId, message, heavyMessages, config.llama.localLlamaUrl, modelOpts("heavy"));
       }
       const finalResponse = await handleSearchSignal(reqId, message, messages, heavyResponse, config.llama.localLlamaUrl, modelOpts("heavy"));
       await sendChunked(message, finalResponse);
@@ -738,13 +747,25 @@ export function getSemaphoreStats() {
 }
 
 /**
+ * Strips any leaked signal tokens (__ESCALATE__ or __SEARCH__: ...) from
+ * text before it reaches Discord.  Acts as a last-resort safety net so raw
+ * signal strings are never rendered in chat even if a guard upstream misses.
+ * @param {string} text
+ * @returns {string}
+ */
+function stripSignals(text) {
+  return text.replace(SIGNAL_STRIP_RE, "").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+/**
  * Sends text as one or more Discord messages, respecting the 2000-char limit.
  * First chunk is a reply; subsequent chunks are plain channel messages.
  * @param {import("discord.js").Message} message
  * @param {string} text
  */
 async function sendChunked(message, text) {
-  const chunks = splitMessage((text ?? "").trim() || "*(no response)*");
+  const cleaned = stripSignals((text ?? "").trim());
+  const chunks = splitMessage(cleaned || "*(no response)*");
   if (chunks.length === 0) {
     await message.reply("*(no response)*");
     return;

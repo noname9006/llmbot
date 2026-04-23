@@ -38,6 +38,65 @@ function loadSystemPromptForRole(role) {
   return loadSystemPrompt();
 }
 
+/**
+ * Strips disabled signal blocks from a raw system prompt based on current
+ * runtime config.  Applied once at startup so every LLM call uses a
+ * pre-cleaned prompt — the model is never taught signals it cannot use.
+ *
+ * - Removes the __SEARCH__ block (from "__SEARCH__" through the
+ *   "Replace <concise web search query>..." line) when SEARCH=off or
+ *   SEARCH_MODE=command.
+ * - Removes the __ESCALATE__ block (from "__ESCALATE__" through the
+ *   "Do NOT use for:..." line) when ESCALATE≠on or ESCALATE_MODE=command.
+ * - Removes example lines referencing stripped signals.
+ * - Removes the "=== SIGNALS ===" header when both blocks are stripped.
+ * - Collapses runs of 3+ blank lines to 2.
+ *
+ * @param {string} raw
+ * @returns {string}
+ */
+function buildSystemPrompt(raw) {
+  const stripSearch =
+    optional("SEARCH", "on") === "off" || optional("SEARCH_MODE", "auto") === "command";
+  const stripEscalate =
+    optional("ESCALATE", "on") !== "on" || optional("ESCALATE_MODE", "auto") === "command";
+
+  let text = raw;
+
+  if (stripEscalate) {
+    // Remove the __ESCALATE__ signal block (from the signal line through
+    // the "Do NOT use for:..." closing line, inclusive).
+    text = text.replace(
+      /^__ESCALATE__[^\n]*\n(?:[^\n]*\n)*?[^\n]*Do NOT use for:[^\n]*\n?/m,
+      ""
+    );
+    // Remove example lines that reference __ESCALATE__.
+    text = text.replace(/^"[^"]*"\s*→\s*__ESCALATE__[^\n]*\n?/gm, "");
+  }
+
+  if (stripSearch) {
+    // Remove the __SEARCH__ signal block (from the signal line through
+    // the "Replace <concise web search query>..." closing line, inclusive).
+    text = text.replace(
+      /^__SEARCH__[^\n]*\n(?:[^\n]*\n)*?[^\n]*Replace <concise web search query>[^\n]*\n?/m,
+      ""
+    );
+    // Remove example lines that reference __SEARCH__:.
+    text = text.replace(/^"[^"]*"\s*→\s*__SEARCH__:[^\n]*\n?/gm, "");
+  }
+
+  // Remove the === SIGNALS === header when both blocks are stripped
+  // (the section is now empty).
+  if (stripEscalate && stripSearch) {
+    text = text.replace(/^=== SIGNALS ===\n?/m, "");
+  }
+
+  // Collapse runs of 3+ blank lines down to 2.
+  text = text.replace(/\n{3,}/g, "\n\n");
+
+  return text.trim();
+}
+
 // ── Pre-computed fallbacks used by per-model config fields ───────────────────
 
 const _extraArgsFallback = optional("LLAMA_EXTRA_ARGS", "");
@@ -137,10 +196,10 @@ export const config = {
     paramsHeavy:  inferenceParams("HEAVY"),
   },
   llm: {
-    systemPrompt: loadSystemPrompt(),           // kept for backward compat
-    systemPromptVps:    loadSystemPromptForRole("vps"),
-    systemPromptCommon: loadSystemPromptForRole("common"),
-    systemPromptHeavy:  loadSystemPromptForRole("heavy"),
+    systemPrompt:       buildSystemPrompt(loadSystemPrompt()),           // kept for backward compat
+    systemPromptVps:    buildSystemPrompt(loadSystemPromptForRole("vps")),
+    systemPromptCommon: buildSystemPrompt(loadSystemPromptForRole("common")),
+    systemPromptHeavy:  buildSystemPrompt(loadSystemPromptForRole("heavy")),
   },
   availability: {
     pollIntervalMs: parseInt(
