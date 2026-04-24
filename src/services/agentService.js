@@ -142,6 +142,7 @@ export async function switchToCommon() {
     // it still refers to THIS promise — prevents stomping a new promise that
     // was assigned after resetActiveModelOnReconnect() ran concurrently.
     const p = agentStart(config.llama.localModelCommonFile, {
+      role: "common",
       extraArgs: config.llama.extraArgsCommon,
       contextSize: config.llama.contextSizeCommon,
     })
@@ -196,6 +197,7 @@ export async function switchToHeavy() {
     logger.debug("switchToHeavy: starting /start for heavy model");
     // Same reference-guard pattern as switchToCommon.
     const p = agentStart(config.llama.localModelHeavyFile, {
+      role: "heavy",
       extraArgs: config.llama.extraArgsHeavy,
       contextSize: config.llama.contextSizeHeavy,
     })
@@ -262,10 +264,12 @@ export function clearHeavyIdleTimer() {
  * @param {string} modelFile  - filename (e.g. "model.gguf"), looked up in the
  *                              agent's configured model directory
  * @param {object} [options]
+ * @param {string} [options.role]         - model role ("common" | "heavy" | ""), used by the
+ *                                          agent to apply per-model env var overrides
  * @param {string} [options.extraArgs]    - extra CLI args forwarded to llama-server
  * @param {number} [options.contextSize]  - context size override (0 = server default)
  */
-async function agentStart(modelFile, { extraArgs = "", contextSize = 0 } = {}) {
+async function agentStart(modelFile, { role = "", extraArgs = "", contextSize = 0 } = {}) {
   const { agentUrl, agentToken } = config.llama;
   if (!agentUrl) {
     throw new Error("LOCAL_AGENT_URL is not configured");
@@ -282,6 +286,7 @@ async function agentStart(modelFile, { extraArgs = "", contextSize = 0 } = {}) {
 
   // Build the request body; only include optional fields when non-empty/non-zero
   const body = { model: modelFile };
+  if (role) body.role = role;
   if (extraArgs) body.extraArgs = extraArgs;
   if (contextSize > 0) body.contextSize = contextSize;
 
