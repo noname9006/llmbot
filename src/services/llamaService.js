@@ -26,7 +26,14 @@ export async function llamaChat(baseUrl, messages, opts = {}) {
   const effectiveTimeoutMs =
     optsFetchTimeout !== undefined ? optsFetchTimeout : config.llama.fetchTimeoutMs;
 
-  logger.debug(`llamaChat → ${baseUrl} messages=${messages.length}`);
+  const paramSummary = [
+    bodyOpts.temperature  !== undefined ? `temp=${bodyOpts.temperature}`           : null,
+    bodyOpts.top_k        !== undefined ? `top_k=${bodyOpts.top_k}`                : null,
+    bodyOpts.max_tokens   !== undefined ? `max_tokens=${bodyOpts.max_tokens}`      : null,
+    bodyOpts.budget_tokens !== undefined ? `budget_tokens=${bodyOpts.budget_tokens}` : null,
+  ].filter(Boolean).join(" ");
+
+  logger.debug(`llamaChat → ${baseUrl} messages=${messages.length}${paramSummary ? ` [${paramSummary}]` : ""}`);
 
   const done = logger.timer(`llamaChat (${baseUrl})`, "debug");
 
