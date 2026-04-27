@@ -187,7 +187,10 @@ export async function warmupVpsModel() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        messages: [{ role: "user", content: "Hi" }],
+        messages: [
+          { role: "system", content: config.llm.systemPromptVps },
+          { role: "user",   content: "Hi" },
+        ],
         max_tokens: 1,
         stream: false,
       }),
