@@ -168,6 +168,44 @@ export async function startVpsLlamaServer() {
 }
 
 /**
+ * Sends a minimal inference request to the VPS llama-server to warm up the
+ * model (load weights into VRAM / populate KV cache) so the first real user
+ * message is not delayed by a cold start.
+ *
+ * Non-fatal: a failure is logged as a warning but does NOT throw.
+ *
+ * @returns {Promise<void>}
+ */
+export async function warmupVpsModel() {
+  try {
+    const WARMUP_TIMEOUT_MS = 30_000;
+    const url = config.llama.vpsUrl;
+
+    logger.info("[vpsLlama] Warming up model (sending minimal inference request)…");
+
+    const res = await fetch(`${url}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: "Hi" }],
+        max_tokens: 1,
+        stream: false,
+      }),
+      signal: AbortSignal.timeout(WARMUP_TIMEOUT_MS),
+    });
+
+    if (res.ok) {
+      logger.info("[vpsLlama] Model warm-up complete");
+    } else {
+      const text = await res.text().catch(() => "(unreadable)");
+      logger.warn(`[vpsLlama] Warm-up request returned non-OK status ${res.status}: ${text}`);
+    }
+  } catch (err) {
+    logger.warn(`[vpsLlama] Warm-up request failed (non-fatal): ${err.message}`);
+  }
+}
+
+/**
  * Stops the VPS llama-server process.
  * Sends SIGTERM, waits up to 5 s, then SIGKILLs if still running.
  * No-op if the process was never started or already exited.
