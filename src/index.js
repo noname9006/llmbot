@@ -3,7 +3,7 @@ import { logger } from "./logger.js";
 import { createBot } from "./bot.js";
 import { getSemaphoreStats } from "./handlers/messageHandler.js";
 import { clearHeavyIdleTimer } from "./services/agentService.js";
-import { startVpsLlamaServer, stopVpsLlamaServer } from "./services/vpsLlamaProcess.js";
+import { startVpsLlamaServer, stopVpsLlamaServer, warmupVpsModel } from "./services/vpsLlamaProcess.js";
 
 logger.info("Starting discord-llm-bot...");
 logger.info(`VPS llama-server: ${config.llama.vpsUrl} (model: ${config.llama.vpsModelFile})`);
@@ -36,6 +36,9 @@ try {
   logger.error("Failed to start VPS llama-server:", err);
   process.exit(1);
 }
+
+// Warm up the model so the first user message isn't delayed by a cold start
+await warmupVpsModel();
 
 // Login
 client.login(config.discord.token).catch((err) => {
