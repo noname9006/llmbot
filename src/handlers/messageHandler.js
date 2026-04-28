@@ -48,8 +48,8 @@ const STREAM_CHUNK_LIMIT = 1900;
 const SEARCH_SIGNAL_RE = /^__SEARCH__:\s*([^\n]+)/;
 
 // Regex used to strip leaked signal tokens from model output before sending
-// to Discord.  Matches __ESCALATE__ anywhere, and __SEARCH__: <rest of line>.
-const SIGNAL_STRIP_RE = /__ESCALATE__|__SEARCH__:[^\n]*/g;
+// to Discord.  Matches __SEARCH__: <rest of line>.
+const SIGNAL_STRIP_RE = /__SEARCH__:[^\n]*/g;
 
 // User-facing fallback messages for unexpected model signal outputs.
 const MSG_SEARCH_EMPTY_QUERY =
@@ -175,13 +175,17 @@ export async function onRemoteMessage(message, remoteClient, localClient) {
       : messages;
 
     const done = logger.timer(`[${reqId}] full response`, "info");
-    const fullResponse = await routeRemoteRequest(
-      reqId,
-      message,
-      messagesWithReminder,
-      localClient
-    );
-    done();
+    let fullResponse;
+    try {
+      fullResponse = await routeRemoteRequest(
+        reqId,
+        message,
+        messagesWithReminder,
+        localClient
+      );
+    } finally {
+      done();
+    }
 
     // Persist to history only when the remote model answered directly.
     // null is returned on the handoff path — the local bot owns that exchange
@@ -233,10 +237,12 @@ export async function onLocalMessage(message, localClient, remoteClient) {
       historyUserId = referenced.author.id;
       logger.debug(`[${reqId}] resolved historyUserId=${historyUserId} from message reference`);
     } catch (err) {
+      // Without the original human's ID we cannot load their history or roll
+      // it back on failure — using the bot's own ID would corrupt the store.
       logger.warn(
-        `[${reqId}] failed to fetch referenced message for history key — falling back to author.id: ${err.message}`
+        `[${reqId}] failed to fetch referenced message for history key — aborting handoff: ${err.message}`
       );
-      historyUserId = message.author.id;
+      return;
     }
   } else {
     historyUserId = message.author.id;
@@ -312,6 +318,10 @@ export async function onLocalMessage(message, localClient, remoteClient) {
     historyService.pushAssistant(historyUserId, finalResponse);
   } catch (err) {
     logger.error(`[${reqId}] [local] Error during local LLM completion:`, err);
+    // Roll back the orphaned user turn that onRemoteMessage pushed under this key.
+    // Without this, history is left with an unanswered user entry that causes
+    // consecutive user messages on the next exchange.
+    historyService.popLastUser(historyUserId);
     await message.channel.send(
       "⚠️ Local model encountered an error. Please try again later."
     ).catch(() => {});
@@ -347,9 +357,16 @@ export async function onLocalMessage(message, localClient, remoteClient) {
 async function routeRemoteRequest(reqId, message, messages, localClient) {
   const localAvailable = isLocalAvailable() && localClient?.isReady();
 
-  // Inject escalation instruction only when the local bot can actually handle it
+  // Inject escalation instruction into the system message when the local bot
+  // can actually handle it.  Appending it to the system message (rather than
+  // as an extra user turn) keeps the alternating user/assistant message
+  // contract intact and is ignored by models that don't support multi-turn
+  // system messages.
   const messagesForModel = localAvailable
-    ? [...messages, { role: "user", content: buildEscalationInstruction() }]
+    ? [
+        { role: "system", content: messages[0].content + "\n\n" + buildEscalationInstruction() },
+        ...messages.slice(1),
+      ]
     : messages;
 
   logger.info(`[${reqId}] Using remote model`);
@@ -389,6 +406,15 @@ async function routeRemoteRequest(reqId, message, messages, localClient) {
 
   // ── Escalation path: post the draft answer and tag the local bot ──────────
   if (shouldEscalate) {
+    // Re-check availability — the local bot may have gone offline while the
+    // remote model was running (inference can take tens of seconds).
+    if (!(isLocalAvailable() && localClient?.isReady())) {
+      logger.info(
+        `[${reqId}] LLM wanted to escalate but local bot went offline during inference — answering directly`
+      );
+      await sendChunked(message, answer);
+      return answer;
+    }
     logger.info(`[${reqId}] LLM self-routing: escalating to local model (score=${score})`);
     const localMention = `<@${localClient.user.id}>`;
     // Append the cc mention if the model did not already include it

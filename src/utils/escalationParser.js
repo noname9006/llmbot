@@ -49,14 +49,15 @@ export function parseEscalationBlock(rawText) {
 }
 
 /**
- * Returns an ephemeral routing instruction to inject as a user turn in the
- * message array before calling the remote model.
+ * Returns the routing instruction that is appended to the system prompt when
+ * the local bot is available.  Embedding it in the system message keeps the
+ * alternating user/assistant message contract intact.
  *
  * It instructs the model to output its normal answer followed by a one-line
  * JSON complexity-assessment block.  The block is parsed by
  * `parseEscalationBlock` to decide whether to escalate to the local model.
  *
- * Only inject this when the local bot is available; otherwise routing is
+ * Only injected when the local bot is available; otherwise routing is
  * unnecessary and the extra tokens waste context.
  *
  * @returns {string}

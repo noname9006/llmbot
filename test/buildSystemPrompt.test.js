@@ -146,25 +146,13 @@ describe("buildSystemPrompt()", () => {
 // We inline the same logic as the production function so these tests run
 // without importing the full messageHandler module (which has side-effects).
 
-const SIGNAL_STRIP_RE = /__ESCALATE__|__SEARCH__:[^\n]*/g;
+const SIGNAL_STRIP_RE = /__SEARCH__:[^\n]*/g;
 
 function stripSignals(text) {
   return text.replace(SIGNAL_STRIP_RE, "").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 describe("stripSignals()", () => {
-  test("removes a standalone __ESCALATE__ token", () => {
-    assert.equal(stripSignals("__ESCALATE__"), "");
-  });
-
-  test("removes __ESCALATE__ embedded in a response", () => {
-    const input = "Some preamble\n__ESCALATE__\nSome suffix";
-    const result = stripSignals(input);
-    assert.ok(!result.includes("__ESCALATE__"));
-    assert.ok(result.includes("Some preamble"));
-    assert.ok(result.includes("Some suffix"));
-  });
-
   test("removes __SEARCH__: <query> token", () => {
     assert.equal(stripSignals("__SEARCH__: bitcoin price today"), "");
   });
@@ -183,15 +171,14 @@ describe("stripSignals()", () => {
   });
 
   test("collapses resulting blank lines to at most 2", () => {
-    const input = "line1\n__ESCALATE__\n\n\n\nline2";
+    const input = "line1\n__SEARCH__: query\n\n\n\nline2";
     const result = stripSignals(input);
     assert.ok(!/\n{3,}/.test(result));
     assert.ok(result.includes("line1"));
     assert.ok(result.includes("line2"));
   });
 
-  test("returns empty string for a response that is only a signal", () => {
-    assert.equal(stripSignals("__ESCALATE__"), "");
+  test("returns empty string for a response that is only a search signal", () => {
     assert.equal(stripSignals("__SEARCH__: some query"), "");
   });
 });
