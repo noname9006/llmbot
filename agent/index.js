@@ -11,9 +11,14 @@ const LLAMA_SERVER_BIN = process.env.LLAMA_SERVER_BIN ?? "llama-server";
 const LLAMA_SERVER_PORT = parseInt(process.env.LLAMA_SERVER_PORT ?? "8081", 10);
 const LLAMA_MODEL_DIR = process.env.LLAMA_MODEL_DIR ?? ".";
 const LLAMA_GPU_LAYERS = process.env.LLAMA_GPU_LAYERS ?? "99";
+// PRIMARY: LLAMA_EXTRA_ARGS_LOCAL; BACKWARD COMPAT: LLAMA_EXTRA_ARGS_COMMON
+const LLAMA_EXTRA_ARGS_LOCAL  = process.env.LLAMA_EXTRA_ARGS_LOCAL  ?? process.env.LLAMA_EXTRA_ARGS_COMMON ?? "";
+// Keep legacy vars for backward compatibility (not used for new "local" role — superseded by LOCAL above)
 const LLAMA_EXTRA_ARGS_COMMON = process.env.LLAMA_EXTRA_ARGS_COMMON ?? "";
 const LLAMA_EXTRA_ARGS_HEAVY  = process.env.LLAMA_EXTRA_ARGS_HEAVY  ?? "";
 const LLAMA_CONTEXT_SIZE = process.env.LLAMA_CONTEXT_SIZE ?? "";
+// PRIMARY: LLAMA_CONTEXT_SIZE_LOCAL; BACKWARD COMPAT: LLAMA_CONTEXT_SIZE_COMMON
+const LLAMA_CONTEXT_SIZE_LOCAL  = process.env.LLAMA_CONTEXT_SIZE_LOCAL  ?? process.env.LLAMA_CONTEXT_SIZE_COMMON ?? "";
 const LLAMA_CONTEXT_SIZE_COMMON = process.env.LLAMA_CONTEXT_SIZE_COMMON ?? "";
 const LLAMA_CONTEXT_SIZE_HEAVY  = process.env.LLAMA_CONTEXT_SIZE_HEAVY  ?? "";
 const LLAMA_EXTRA_ARGS = process.env.LLAMA_EXTRA_ARGS ?? "";
@@ -287,20 +292,26 @@ app.post("/start", async (req, res) => {
   logger.info(`/start requested: model="${modelFile}"`);
 
   const rawRole = typeof req.body?.role === "string" ? req.body.role : "";
-  const role = (rawRole === "common" || rawRole === "heavy") ? rawRole : "";
-  if (rawRole && !role) {
+  // Accept "local" as the canonical role; treat "common" and "heavy" as aliases
+  // for backward compatibility with older bot versions.
+  let role = "";
+  if (rawRole === "local" || rawRole === "common" || rawRole === "heavy") {
+    role = rawRole === "local" ? "local" : rawRole; // normalize legacy roles
+  } else if (rawRole) {
     logger.warn(`/start received unrecognized role "${rawRole}" — treating as no role`);
   }
 
   // Resolve extraArgs: agent per-model env (highest) > bot-sent value > agent global fallback
-  const envExtraArgs = role === "common" ? LLAMA_EXTRA_ARGS_COMMON
+  const envExtraArgs = role === "local"  ? LLAMA_EXTRA_ARGS_LOCAL
+                     : role === "common" ? LLAMA_EXTRA_ARGS_COMMON
                      : role === "heavy"  ? LLAMA_EXTRA_ARGS_HEAVY
                      : "";
   const bodyExtraArgs = typeof req.body?.extraArgs === "string" ? req.body.extraArgs.trim() : "";
   const extraArgs = envExtraArgs || bodyExtraArgs || LLAMA_EXTRA_ARGS;
 
   // Resolve contextSize: agent per-model env (highest) > bot-sent value > agent global fallback
-  const envContextSize = role === "common" ? LLAMA_CONTEXT_SIZE_COMMON
+  const envContextSize = role === "local"  ? LLAMA_CONTEXT_SIZE_LOCAL
+                       : role === "common" ? LLAMA_CONTEXT_SIZE_COMMON
                        : role === "heavy"  ? LLAMA_CONTEXT_SIZE_HEAVY
                        : "";
   const bodyContextSize = typeof req.body?.contextSize === "number" ? req.body.contextSize : 0;
@@ -381,10 +392,12 @@ app.listen(PORT, () => {
     logger.warn("AGENT_TOKEN is not set — agent is unprotected!");
   }
   logger.debug(`Log level: ${LOG_LEVEL}`);
-  logger.debug(`Extra args (common): ${LLAMA_EXTRA_ARGS_COMMON || "(none)"}`);
-  logger.debug(`Extra args (heavy):  ${LLAMA_EXTRA_ARGS_HEAVY || "(none)"}`);
-  logger.debug(`Context size (common): ${LLAMA_CONTEXT_SIZE_COMMON || "(default)"}`);
-  logger.debug(`Context size (heavy):  ${LLAMA_CONTEXT_SIZE_HEAVY || "(default)"}`);
+  logger.debug(`Extra args (local):  ${LLAMA_EXTRA_ARGS_LOCAL  || "(none)"}`);
+  logger.debug(`Extra args (common): ${LLAMA_EXTRA_ARGS_COMMON || "(none)"} (legacy)`);
+  logger.debug(`Extra args (heavy):  ${LLAMA_EXTRA_ARGS_HEAVY  || "(none)"} (legacy)`);
+  logger.debug(`Context size (local):  ${LLAMA_CONTEXT_SIZE_LOCAL  || "(default)"}`);
+  logger.debug(`Context size (common): ${LLAMA_CONTEXT_SIZE_COMMON || "(default)"} (legacy)`);
+  logger.debug(`Context size (heavy):  ${LLAMA_CONTEXT_SIZE_HEAVY  || "(default)"} (legacy)`);
 });
 
 // ── Graceful shutdown ─────────────────────────────────────────────────────────

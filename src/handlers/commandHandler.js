@@ -15,7 +15,6 @@ import { config } from "../config.js";
  */
 function getKnownCommands() {
   return new Set([
-    config.escalate.command.toLowerCase(),
     config.search.command.toLowerCase(),
     "!reset",
     "!status",
@@ -46,7 +45,7 @@ export function isCommand(content) {
  * @returns {Promise<string|null>}
  */
 export async function handleCommand(message, _client, handlers = {}) {
-  const { handleForcedSearch, handleForcedEscalation, getSemaphoreStats } = handlers;
+  const { handleForcedSearch, getSemaphoreStats } = handlers;
   const words = message.content.trim().split(/\s+/);
   const known = getKnownCommands();
   const cmdToken = words.find((w) => known.has(w.toLowerCase()));
@@ -54,23 +53,6 @@ export async function handleCommand(message, _client, handlers = {}) {
   const cmd = cmdToken.replace(/^!/, "").toLowerCase();
 
   logger.debug(`[${message.author.tag}] command dispatched: "${cmd}"`);
-
-  // Check for dynamic escalation command
-  const escalateCmd = config.escalate.command.replace(/^!/, "").toLowerCase();
-  if (cmd === escalateCmd) {
-    if (config.escalate.enabled !== "on" || config.escalate.mode !== "command") {
-      return "⚠️ Manual escalation is not enabled.";
-    }
-    if (!handleForcedEscalation) {
-      return "⚠️ Escalation handler is not available.";
-    }
-    logger.info(`[${message.author.tag}] escalation command received`);
-    handleForcedEscalation(message).catch((err) => {
-      logger.error("Unhandled error in escalation command:", err);
-      message.reply("⚠️ An unexpected error occurred during escalation.").catch(() => {});
-    });
-    return null;
-  }
 
   // Check for dynamic search command
   const searchCmd = config.search.command.replace(/^!/, "").toLowerCase();
@@ -112,14 +94,14 @@ export async function handleCommand(message, _client, handlers = {}) {
       }
 
       const localOnline = isLocalAvailable();
-      const vpsOnline = isVpsAvailable();
+      const remoteOnline = isVpsAvailable();
       const activeModel = getActiveLocalModel();
       const historyCount = historyService.size;
       const { running, queued } = getSemaphoreStats();
 
-      const modelLine = localOnline
+      const localLine = localOnline
         ? `🟢 Local agent **online** (active model: **${activeModel ?? "none"}**)`
-        : `🔴 Local agent **offline** — using VPS fallback model`;
+        : `🔴 Local agent **offline** — remote model is the only responder`;
 
       const durationMs = localOnline
         ? agentOnlineDurationMs()
@@ -129,16 +111,16 @@ export async function handleCommand(message, _client, handlers = {}) {
           ? `   ⏱ ${localOnline ? "Online" : "Offline"} for **${formatDuration(durationMs)}**`
           : "";
 
-      const vpsLine = vpsOnline
-        ? "🟢 VPS llama-server **online**"
-        : "🔴 VPS llama-server **offline** ⚠️";
+      const remoteLine = remoteOnline
+        ? "🟢 Remote llama-server **online**"
+        : "🔴 Remote llama-server **offline** ⚠️";
 
       const concurrencyLine = `⚙️ LLM requests: **${running}** active, **${queued}** queued`;
 
       return [
-        modelLine,
+        localLine,
         durationLine,
-        vpsLine,
+        remoteLine,
         concurrencyLine,
         `📊 Active user histories: **${historyCount}**`,
       ]
@@ -155,12 +137,12 @@ export async function handleCommand(message, _client, handlers = {}) {
       if (config.search.enabled !== "off") {
         lines.push(`\`${config.search.command} <query>\` — Force a web search via SearXNG`);
       }
-      if (config.escalate.enabled === "on" && config.escalate.mode === "command") {
-        lines.push(`\`${config.escalate.command}\` — Escalate to the heavy model`);
-      }
       lines.push("`!help` — Show this message");
       lines.push("");
       lines.push("**Chatting:** Mention me (`@BotName your question`) to start a conversation.");
+      if (config.discord.tokenLocal) {
+        lines.push("A local model (Bot #2) is also available for complex deep-dive questions.");
+      }
       return lines.join("\n");
     }
 
@@ -185,3 +167,4 @@ function formatDuration(ms) {
   if (m > 0) return `${m}m ${s}s`;
   return `${s}s`;
 }
+

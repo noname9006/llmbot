@@ -4,15 +4,15 @@ import { logger } from "../logger.js";
 import { historyService } from "../services/historyService.js";
 import { llamaChat } from "../services/llamaService.js";
 import { isLocalAvailable } from "../services/localAvailabilityService.js";
-import {
-  getActiveLocalModel,
-  switchToCommon,
-  switchToHeavy,
-  resetHeavyIdleTimer,
-} from "../services/agentService.js";
+import { ensureLocalModel } from "../services/agentService.js";
 import { search } from "../services/searchService.js";
 import { isCommand, handleCommand } from "./commandHandler.js";
 import { createRateLimiter, createSemaphore } from "../utils/rateLimiter.js";
+import { parseEscalationBlock, buildEscalationInstruction } from "../utils/escalationParser.js";
+import {
+  setLocalPresenceOnline,
+  setLocalPresenceCooldown,
+} from "../services/localPresenceService.js";
 
 // ── Per-model llamaChat options ───────────────────────────────────────────────
 
@@ -21,11 +21,11 @@ import { createRateLimiter, createSemaphore } from "../utils/rateLimiter.js";
  * the given model role.  Callers spread this into their llamaChat opts argument
  * so the correct params are sent for every role.
  *
- * @param {'vps'|'common'|'heavy'} role
+ * @param {'remote'|'local'} role
  * @returns {object}
  */
 function modelOpts(role) {
-  const capRole = role[0].toUpperCase() + role.slice(1); // "Vps" | "Common" | "Heavy"
+  const capRole = role[0].toUpperCase() + role.slice(1); // "Remote" | "Local"
   const params  = config.llama[`params${capRole}`];
   return {
     temperature:    params.temperature,
@@ -47,19 +47,11 @@ const STREAM_CHUNK_LIMIT = 1900;
 // query — prevents multi-line model output from polluting the search term.
 const SEARCH_SIGNAL_RE = /^__SEARCH__:\s*([^\n]+)/;
 
-// Regex to detect escalation signal — matches the signal even when the model
-// appends trailing commentary (e.g. "__ESCALATE__ because this is complex").
-const ESCALATE_SIGNAL_RE = /^__ESCALATE__/;
-
 // Regex used to strip leaked signal tokens from model output before sending
-// to Discord.  Matches __ESCALATE__ anywhere, and __SEARCH__: <rest of line>.
-const SIGNAL_STRIP_RE = /__ESCALATE__|__SEARCH__:[^\n]*/g;
+// to Discord.  Matches __SEARCH__: <rest of line>.
+const SIGNAL_STRIP_RE = /__SEARCH__:[^\n]*/g;
 
 // User-facing fallback messages for unexpected model signal outputs.
-const MSG_VPS_ESCALATE_FALLBACK =
-  "sounds too complicated, unable to process it now, pls try asking later";
-const MSG_HEAVY_ESCALATE_FALLBACK =
-  "Sorry, I'm having trouble answering this right now. Please try again later.";
 const MSG_SEARCH_EMPTY_QUERY =
   "I wanted to search for something but couldn't determine a valid query.";
 const MSG_SEARCH_RECURSION =
@@ -92,12 +84,21 @@ setInterval(() => {
   historyService.cleanup();
 }, 60 * 60_000).unref();
 
+// ── Remote bot message handler ────────────────────────────────────────────────
+
 /**
- * Called for every incoming message.
+ * Called for every incoming message on the remote bot (Bot #1).
+ * Handles commands, rate limiting, complexity detection, and routing:
+ *   - Simple requests → answered directly by the remote model.
+ *   - Complex requests (local bot available) → remote provides a brief
+ *     starter answer and tags the local bot (@LocalBot) for the deep dive.
+ *   - Complex requests (local bot unavailable) → remote answers fully.
+ *
  * @param {import("discord.js").Message} message
- * @param {import("discord.js").Client} client
+ * @param {import("discord.js").Client} remoteClient
+ * @param {import("discord.js").Client | null} localClient
  */
-export async function onMessage(message, client) {
+export async function onRemoteMessage(message, remoteClient, localClient) {
   // Ignore bots (including self)
   if (message.author.bot) return;
 
@@ -112,9 +113,8 @@ export async function onMessage(message, client) {
   // ── Commands (no mention required) ─────────────────────────────────────────
   if (isCommand(message.content)) {
     logger.debug(`[${message.author.tag}] command detected in: "${message.content.trim().slice(0, 80)}"`);
-    const reply = await handleCommand(message, client, {
+    const reply = await handleCommand(message, remoteClient, {
       handleForcedSearch,
-      handleForcedEscalation,
       getSemaphoreStats,
     });
     if (reply) {
@@ -123,8 +123,8 @@ export async function onMessage(message, client) {
     return;
   }
 
-  // ── Must mention the bot to trigger a chat response ────────────────────────
-  const isMentioned = message.mentions.has(client.user.id);
+  // ── Must mention the remote bot to trigger a chat response ─────────────────
+  const isMentioned = message.mentions.has(remoteClient.user.id);
   if (!isMentioned) return;
 
   // Strip the mention(s) from the message text
@@ -153,11 +153,6 @@ export async function onMessage(message, client) {
     `[${reqId}] [${message.author.tag}] in #${message.channel.name ?? message.channelId}: ${userText.slice(0, 80)}`
   );
 
-  // ── If Model 3 is loaded, reset its idle timer on every new message ────────
-  if (getActiveLocalModel() === "heavy") {
-    resetHeavyIdleTimer();
-  }
-
   // ── Typing indicator ────────────────────────────────────────────────────────
   await message.channel.sendTyping();
   const typingInterval = setInterval(
@@ -171,7 +166,7 @@ export async function onMessage(message, client) {
   try {
     // ── Build message history (inside semaphore to avoid dirty-history races) ─
     historyService.pushUser(message.author.id, userText);
-    const messages = historyService.getMessages(message.author.id, config.llm.systemPromptCommon);
+    const messages = historyService.getMessages(message.author.id, config.llm.systemPromptRemote);
 
     // ── Inject ephemeral capitalization reminder ──────────────────────────────
     const capReminder = buildCapReminder(userText);
@@ -180,16 +175,24 @@ export async function onMessage(message, client) {
       : messages;
 
     const done = logger.timer(`[${reqId}] full response`, "info");
-    const fullResponse = await routeAndRespond(
-      reqId,
-      message,
-      messagesWithReminder,
-      userText
-    );
-    done();
+    let fullResponse;
+    try {
+      fullResponse = await routeRemoteRequest(
+        reqId,
+        message,
+        messagesWithReminder,
+        localClient
+      );
+    } finally {
+      done();
+    }
 
-    // Persist the assistant's reply to history (the final user-facing response)
-    historyService.pushAssistant(message.author.id, fullResponse);
+    // Persist to history only when the remote model answered directly.
+    // null is returned on the handoff path — the local bot owns that exchange
+    // and will push its own assistant turn under the same historyUserId.
+    if (fullResponse !== null) {
+      historyService.pushAssistant(message.author.id, fullResponse);
+    }
   } catch (err) {
     logger.error(`[${reqId}] Error during LLM completion:`, err);
 
@@ -207,306 +210,229 @@ export async function onMessage(message, client) {
   }
 }
 
-// ── Core routing logic ────────────────────────────────────────────────────────
+// ── Local bot message handler ─────────────────────────────────────────────────
 
 /**
- * Determines which model to use, handles escalation and search signals,
- * posts replies to Discord, and returns the final response text.
+ * Called when the local bot (Bot #2) receives a message from the remote bot
+ * that tags it.  Resolves the original human user ID via the message reference
+ * (Option B history key resolution), runs inference against the local model,
+ * and posts the deep-dive reply.
+ *
+ * @param {import("discord.js").Message} message
+ * @param {import("discord.js").Client} localClient
+ * @param {import("discord.js").Client} remoteClient
+ */
+export async function onLocalMessage(message, localClient, remoteClient) {
+  const reqId = randomUUID().slice(0, 8);
+
+  // ── Option B: resolve the original human user's ID ─────────────────────────
+  // The message was authored by the remote bot (not the human).  We need the
+  // human's ID to load/persist history under the correct key.
+  // The remote bot sent its relay message as a Discord *reply* to the original
+  // human message, so message.reference.messageId points to it.
+  let historyUserId;
+  if (message.author.bot && message.reference) {
+    try {
+      const referenced = await message.channel.messages.fetch(message.reference.messageId);
+      historyUserId = referenced.author.id;
+      logger.debug(`[${reqId}] resolved historyUserId=${historyUserId} from message reference`);
+    } catch (err) {
+      // Without the original human's ID we cannot load their history or roll
+      // it back on failure — using the bot's own ID would corrupt the store.
+      logger.warn(
+        `[${reqId}] failed to fetch referenced message for history key — aborting handoff: ${err.message}`
+      );
+      return;
+    }
+  } else {
+    historyUserId = message.author.id;
+  }
+
+  // ── Extract the question text (strip all mention tokens) ────────────────────
+  const userText = message.content
+    .replace(/<@!?\d+>/g, "")
+    .trim();
+
+  if (!userText) {
+    logger.debug(`[${reqId}] local bot received empty message after stripping mentions — ignoring`);
+    return;
+  }
+
+  logger.info(
+    `[${reqId}] [local] historyUserId=${historyUserId} in #${message.channel.name ?? message.channelId}: ${userText.slice(0, 80)}`
+  );
+
+  // ── Typing indicator ────────────────────────────────────────────────────────
+  await message.channel.sendTyping();
+  const typingInterval = setInterval(
+    () => message.channel.sendTyping().catch(() => {}),
+    8_000
+  );
+
+  // ── Acquire global concurrency slot ────────────────────────────────────────
+  await semaphore.acquire();
+
+  // Set presence to Online immediately — we're starting to process
+  setLocalPresenceOnline();
+
+  try {
+    // Ensure the local model is loaded
+    await ensureLocalModel();
+
+    // ── Build message history keyed by the HUMAN's user ID ────────────────────
+    // Note: we do NOT push a new user message here — the original human message
+    // was already stored by the remote bot handler under historyUserId.
+    // We retrieve the existing history and run inference on it.
+    const messages = historyService.getMessages(historyUserId, config.llm.systemPromptLocal);
+
+    const done = logger.timer(`[${reqId}] local full response`, "info");
+    logger.debug(`[${reqId}] local model messages: ${messages.length} (${Math.floor((messages.length - 1) / 2)} user/assistant pairs)`);
+
+    const rawResponse = stripThinkBlock(
+      await llamaChat(config.llama.localUrl, messages, modelOpts("local"))
+    );
+
+    // Handle search signal from local model
+    const searchMatch = SEARCH_SIGNAL_RE.exec(rawResponse.trim());
+    let finalResponse;
+    if (searchMatch) {
+      if (config.search.enabled === "off") {
+        logger.warn(`[${reqId}] [local] __SEARCH__ signal dropped — SEARCH=off`);
+        finalResponse = await retryWithoutSearch(reqId, message, messages, config.llama.localUrl, modelOpts("local"));
+      } else if (config.search.mode === "command") {
+        logger.warn(`[${reqId}] [local] __SEARCH__ auto-signal dropped — SEARCH_MODE=command`);
+        finalResponse = await retryWithoutSearch(reqId, message, messages, config.llama.localUrl, modelOpts("local"));
+      } else {
+        logger.debug(`[${reqId}] [local] __SEARCH__ detected — mode=auto, searching`);
+        finalResponse = await handleSearchSignal(reqId, message, messages, rawResponse, config.llama.localUrl, modelOpts("local"));
+      }
+    } else {
+      finalResponse = rawResponse;
+    }
+
+    done();
+
+    await sendChunked(message, finalResponse);
+
+    // Persist the local model's reply under the HUMAN's history key
+    historyService.pushAssistant(historyUserId, finalResponse);
+  } catch (err) {
+    logger.error(`[${reqId}] [local] Error during local LLM completion:`, err);
+    // Roll back the orphaned user turn that onRemoteMessage pushed under this key.
+    // Without this, history is left with an unanswered user entry that causes
+    // consecutive user messages on the next exchange.
+    historyService.popLastUser(historyUserId);
+    await message.channel.send(
+      "⚠️ Local model encountered an error. Please try again later."
+    ).catch(() => {});
+  } finally {
+    semaphore.release();
+    clearInterval(typingInterval);
+    // Transition presence: Online → Idle (after cooldown)
+    setLocalPresenceCooldown();
+  }
+}
+
+// ── Remote routing logic ──────────────────────────────────────────────────────
+
+/**
+ * Routes a remote bot request using LLM self-evaluation.
+ *
+ * The remote model always answers first.  When the local bot is available,
+ * an escalation instruction is injected into the message array asking the
+ * model to append a JSON complexity block after its answer.  The block is
+ * parsed to determine whether to escalate:
+ *
+ *   should_escalate=false → return the answer directly (local unavailable → same path)
+ *   should_escalate=true  → post the answer as a draft + tag @LocalBot; return null
+ *                            so the caller skips historyService.pushAssistant and
+ *                            lets onLocalMessage own the history for this exchange.
  *
  * @param {string} reqId
  * @param {import("discord.js").Message} message
  * @param {Array<{role: string, content: string}>} messages
- * @param {string} userText  - original user text (for search forced commands)
- * @returns {Promise<string>}  the final assistant response that was shown to the user
+ * @param {import("discord.js").Client | null} localClient
+ * @returns {Promise<string|null>}  answer text, or null on the handoff path
  */
-async function routeAndRespond(reqId, message, messages, userText) {
-  if (!isLocalAvailable()) {
-    // ── Route 1: local offline → use VPS Model 1 ───────────────────────────
-    logger.debug(`[${reqId}] local agent offline — route 1 (VPS model) selected`);
-    logger.info(`[${reqId}] Local agent offline — using VPS model (Model 1)`);
-    const vpsMessages = [{ role: "system", content: config.llm.systemPromptVps }, ...messages.slice(1)];
-    logger.debug(`[${reqId}] messages for LLM: ${vpsMessages.length} (${Math.floor((vpsMessages.length - 1) / 2)} user/assistant pairs)`);
-    const response = stripThinkBlock(await llamaChat(config.llama.vpsUrl, vpsMessages, modelOpts("vps")));
-    // VPS model should never emit __ESCALATE__; if it does, replace with a
-    // safe fallback rather than leaking the raw signal string to the user.
-    if (ESCALATE_SIGNAL_RE.test(response.trim())) {
-      logger.warn(`[${reqId}] VPS model emitted __ESCALATE__ — replacing with fallback`);
-      await sendChunked(message, MSG_VPS_ESCALATE_FALLBACK);
-      return MSG_VPS_ESCALATE_FALLBACK;
-    }
-    const vpsSearchMatch = SEARCH_SIGNAL_RE.exec(response.trim());
-    if (vpsSearchMatch) {
-      if (config.search.enabled === "off") {
-        logger.debug(`[${reqId}] __SEARCH__ detected — SEARCH=off, dropping`);
-        logger.warn(`[${reqId}] __SEARCH__ signal dropped — SEARCH=off`);
-        return await retryWithoutSearch(reqId, message, vpsMessages, config.llama.vpsUrl, modelOpts("vps"));
-      }
-      if (config.search.mode === "command") {
-        logger.debug(`[${reqId}] __SEARCH__ detected — mode=command, dropping`);
-        logger.warn(`[${reqId}] __SEARCH__ auto-signal dropped — SEARCH_MODE=command`);
-        return await retryWithoutSearch(reqId, message, vpsMessages, config.llama.vpsUrl, modelOpts("vps"));
-      }
-      logger.debug(`[${reqId}] __SEARCH__ detected — mode=auto, searching`);
-    }
-    const finalResponse = await handleSearchSignal(
-      reqId,
-      message,
-      vpsMessages,
-      response,
-      config.llama.vpsUrl,
-      modelOpts("vps")
-    );
-    await sendChunked(message, finalResponse);
-    return finalResponse;
-  }
+async function routeRemoteRequest(reqId, message, messages, localClient) {
+  const localAvailable = isLocalAvailable() && localClient?.isReady();
 
-  // ── Route 2: local online → use Model 2 (common) ─────────────────────────
-  logger.debug(`[${reqId}] local agent online — route 2 (common model) selected`);
-  await switchToCommon();
+  // Inject escalation instruction into the system message when the local bot
+  // can actually handle it.  Appending it to the system message (rather than
+  // as an extra user turn) keeps the alternating user/assistant message
+  // contract intact and is ignored by models that don't support multi-turn
+  // system messages.
+  const messagesForModel = localAvailable
+    ? [
+        { role: "system", content: messages[0].content + "\n\n" + buildEscalationInstruction() },
+        ...messages.slice(1),
+      ]
+    : messages;
 
-  // Check for manual escalation command (only when local is online)
-  if (
-    config.escalate.enabled === "on" &&
-    config.escalate.mode === "command" &&
-    userText.trim().toLowerCase().split(/\s+/).includes(config.escalate.command.toLowerCase())
-  ) {
-    logger.info(`[${reqId}] Manual escalation command detected`);
-    return await handleEscalation(reqId, message, messages);
-  }
-
-  logger.info(`[${reqId}] Local agent online — using Model 2 (common)`);
+  logger.info(`[${reqId}] Using remote model`);
   logger.debug(`[${reqId}] messages for LLM: ${messages.length} (${Math.floor((messages.length - 1) / 2)} user/assistant pairs)`);
-  const model2Response = stripThinkBlock(await llamaChat(config.llama.localLlamaUrl, messages, modelOpts("common")));
 
-  const trimmed = model2Response.trim();
+  const rawResponse = stripThinkBlock(
+    await llamaChat(config.llama.remoteUrl, messagesForModel, modelOpts("remote"))
+  );
 
-  if (ESCALATE_SIGNAL_RE.test(trimmed)) {
-    // ── Route 3: escalation → Model 3 ────────────────────────────────────
-    if (config.escalate.enabled === "off") {
-      logger.debug(`[${reqId}] __ESCALATE__ detected — ESCALATE=off, dropping`);
-      logger.warn(`[${reqId}] __ESCALATE__ signal dropped — ESCALATE=off`);
-      return await retryWithoutEscalation(reqId, message, messages);
-    }
+  // Parse the answer + JSON routing block when the local bot is available
+  const { answer, shouldEscalate, score } = localAvailable
+    ? parseEscalationBlock(rawResponse)
+    : { answer: rawResponse, shouldEscalate: false, score: null };
 
-    if (config.escalate.mode === "command") {
-      logger.debug(`[${reqId}] __ESCALATE__ detected — mode=command, dropping`);
-      logger.warn(`[${reqId}] __ESCALATE__ auto-signal dropped — ESCALATE_MODE=command`);
-      return await retryWithoutEscalation(reqId, message, messages);
-    }
-
-    logger.debug(`[${reqId}] __ESCALATE__ detected — mode=auto, escalating`);
-    return await handleEscalation(reqId, message, messages);
+  if (localAvailable && score !== null) {
+    logger.debug(`[${reqId}] LLM routing: score=${score} should_escalate=${shouldEscalate}`);
   }
 
-  const searchMatch = SEARCH_SIGNAL_RE.exec(trimmed);
+  // Search signal is checked in the clean answer (JSON block already stripped)
+  const searchMatch = SEARCH_SIGNAL_RE.exec(answer.trim());
   if (searchMatch) {
-    // ── Route 4: search signal from Model 2 ──────────────────────────────
     if (config.search.enabled === "off") {
-      logger.debug(`[${reqId}] __SEARCH__ detected — SEARCH=off, dropping`);
       logger.warn(`[${reqId}] __SEARCH__ signal dropped — SEARCH=off`);
-      return await retryWithoutSearch(reqId, message, messages, config.llama.localLlamaUrl, modelOpts("common"));
+      return await retryWithoutSearch(reqId, message, messages, config.llama.remoteUrl, modelOpts("remote"));
     }
     if (config.search.mode === "command") {
-      logger.debug(`[${reqId}] __SEARCH__ detected — mode=command, dropping`);
       logger.warn(`[${reqId}] __SEARCH__ auto-signal dropped — SEARCH_MODE=command`);
-      return await retryWithoutSearch(reqId, message, messages, config.llama.localLlamaUrl, modelOpts("common"));
+      return await retryWithoutSearch(reqId, message, messages, config.llama.remoteUrl, modelOpts("remote"));
     }
     logger.debug(`[${reqId}] __SEARCH__ detected — mode=auto, searching`);
     const finalResponse = await handleSearchSignal(
-      reqId,
-      message,
-      messages,
-      model2Response,
-      config.llama.localLlamaUrl,
-      modelOpts("common")
+      reqId, message, messages, answer, config.llama.remoteUrl, modelOpts("remote")
     );
     await sendChunked(message, finalResponse);
     return finalResponse;
   }
 
-  // Normal Model 2 response
-  await sendChunked(message, model2Response);
-  return model2Response;
-}
-
-// ── Escalation flow ───────────────────────────────────────────────────────────
-
-/**
- * Re-runs the model asking it to answer directly, without searching.
- * Used when search is disabled (SEARCH=off) or suppressed (SEARCH_MODE=command).
- */
-async function retryWithoutSearch(reqId, message, messages, baseUrl, opts = {}) {
-  logger.debug(`[${reqId}] retryWithoutSearch — re-running without search context`);
-  const retryMessages = [
-    ...messages,
-    {
-      role: "user",
-      content: "Please answer directly without searching. Use only what you already know.",
-    },
-  ];
-  const retryResponse = stripThinkBlock(await llamaChat(baseUrl, retryMessages, opts));
-  if (ESCALATE_SIGNAL_RE.test(retryResponse.trim())) {
-    logger.warn(`[${reqId}] retryWithoutSearch response contained __ESCALATE__ — using fallback`);
-    await sendChunked(message, MSG_HEAVY_ESCALATE_FALLBACK);
-    return MSG_HEAVY_ESCALATE_FALLBACK;
-  }
-  await sendChunked(message, retryResponse);
-  return retryResponse;
-}
-
-/**
- * Re-runs the common model asking it to answer directly, without escalating.
- * Used when escalation is disabled (ESCALATE=off) or suppressed (ESCALATE_MODE=command).
- */
-async function retryWithoutEscalation(reqId, message, messages) {
-  logger.debug(`[${reqId}] retryWithoutEscalation — re-running without escalation`);
-  const retryMessages = [
-    ...messages,
-    {
-      role: "user",
-      content: "Please answer the question directly without escalating. Do your best with the information you have.",
-    },
-  ];
-  const retryResponse = stripThinkBlock(await llamaChat(config.llama.localLlamaUrl, retryMessages, modelOpts("common")));
-  if (ESCALATE_SIGNAL_RE.test(retryResponse.trim())) {
-    logger.warn(`[${reqId}] retryWithoutEscalation response still contained __ESCALATE__ — using fallback`);
-    await sendChunked(message, MSG_HEAVY_ESCALATE_FALLBACK);
-    return MSG_HEAVY_ESCALATE_FALLBACK;
-  }
-  await sendChunked(message, retryResponse);
-  return retryResponse;
-}
-
-async function handleEscalation(reqId, message, messages) {
-  if (config.escalate.type === "args") {
-    logger.debug(`[${reqId}] escalation type=args: re-running with heavy params on common model`);
-    logger.info(`[${reqId}] Escalation type=args — using heavy params on common model (no model swap)`);
-
-    // Still generate a transition message from common model (same UX)
-    const transitionMessages = [
-      ...messages,
-      {
-        role: "user",
-        content:
-          "You are about to answer this question with deeper focus. " +
-          "Generate a short, natural, conversational message (1-2 sentences) " +
-          "telling the user you need more time to think about this specific question. " +
-          "Reference what they asked. Sound human, match their capitalization style. " +
-          "Do not mention \"model\" or \"AI\". " +
-          "Just say you need to dig deeper, research it, think it through, etc.",
-      },
-    ];
-    const transitionMsg = stripThinkBlock(await llamaChat(config.llama.localLlamaUrl, transitionMessages, modelOpts("common")));
-    await sendChunked(message, transitionMsg);
-
-    // Re-run with heavy inference params using systemPromptHeavy (no __ESCALATE__ definition)
-    const heavyMessages = [{ role: "system", content: config.llm.systemPromptHeavy }, ...messages.slice(1)];
-    const heavyResponse = stripThinkBlock(
-      await llamaChat(config.llama.localLlamaUrl, heavyMessages, modelOpts("heavy"))
-    );
-
-    // Guard: heavy model response should not contain __ESCALATE__
-    if (ESCALATE_SIGNAL_RE.test(heavyResponse.trim())) {
-      logger.warn(`[${reqId}] type=args escalation response contained __ESCALATE__ — using fallback`);
-      await sendChunked(message, MSG_HEAVY_ESCALATE_FALLBACK);
-      return MSG_HEAVY_ESCALATE_FALLBACK;
+  // ── Escalation path: post the draft answer and tag the local bot ──────────
+  if (shouldEscalate) {
+    // Re-check availability — the local bot may have gone offline while the
+    // remote model was running (inference can take tens of seconds).
+    if (!(isLocalAvailable() && localClient?.isReady())) {
+      logger.info(
+        `[${reqId}] LLM wanted to escalate but local bot went offline during inference — answering directly`
+      );
+      await sendChunked(message, answer);
+      return answer;
     }
-
-    // Handle search signal
-    const searchMatch = SEARCH_SIGNAL_RE.exec(heavyResponse.trim());
-    if (searchMatch) {
-      if (config.search.enabled === "off") {
-        logger.warn(`[${reqId}] __SEARCH__ signal dropped — SEARCH=off`);
-        return await retryWithoutSearch(reqId, message, heavyMessages, config.llama.localLlamaUrl, modelOpts("heavy"));
-      }
-      if (config.search.mode === "command") {
-        logger.warn(`[${reqId}] __SEARCH__ auto-signal dropped — SEARCH_MODE=command`);
-        return await retryWithoutSearch(reqId, message, heavyMessages, config.llama.localLlamaUrl, modelOpts("heavy"));
-      }
-      const finalResponse = await handleSearchSignal(reqId, message, messages, heavyResponse, config.llama.localLlamaUrl, modelOpts("heavy"));
-      await sendChunked(message, finalResponse);
-      return finalResponse;
-    }
-
-    await sendChunked(message, heavyResponse);
-    return heavyResponse;
+    logger.info(`[${reqId}] LLM self-routing: escalating to local model (score=${score})`);
+    const localMention = `<@${localClient.user.id}>`;
+    // Append the cc mention if the model did not already include it
+    const handoffText = answer.includes(localMention)
+      ? answer
+      : `${answer}\n\ncc ${localMention}`;
+    await sendChunked(message, handoffText);
+    // Return null to signal the caller that history ownership passes to the
+    // local bot — onRemoteMessage must NOT call historyService.pushAssistant.
+    return null;
   }
 
-  // type=model (existing behaviour)
-  logger.info(`[${reqId}] Model 2 escalated — switching to Model 3 (heavy)`);
-
-  // 1. Ask Model 2 to generate a "I need more time" transition message BEFORE
-  //    switching away from it (Model 2 won't be available after switchToHeavy).
-  const transitionMessages = [
-    ...messages,
-    {
-      role: "user",
-      content:
-        "You are about to hand off this question to a more powerful model. " +
-        "Generate a short, natural, conversational message (1-2 sentences) " +
-        "telling the user you need more time to think about this specific question. " +
-        "Reference what they asked. Sound human, match their capitalization style. " +
-        "Do not mention \"model\" or \"AI\". " +
-        "Just say you need to dig deeper, research it, think it through, etc.",
-    },
-  ];
-
-  const transitionMsg = stripThinkBlock(await llamaChat(
-    config.llama.localLlamaUrl,
-    transitionMessages,
-    modelOpts("common")
-  ));
-
-  // 2. Send the transition message to Discord BEFORE switching to the heavy model.
-  //    The common model generated it — we must post it now while common is
-  //    still the active model.
-  await sendChunked(message, transitionMsg);
-
-  // 3. Switch to the heavy model.  If this fails it throws; the caller's catch
-  //    block handles cleanup.  The user has already seen the transition message,
-  //    but an error reply will follow to make it clear something went wrong.
-  await switchToHeavy();
-
-  // 4. Run the heavy model with the full conversation history
-  const heavyMessages = [{ role: "system", content: config.llm.systemPromptHeavy }, ...messages.slice(1)];
-  const heavyResponse = stripThinkBlock(await llamaChat(config.llama.localLlamaUrl, heavyMessages, modelOpts("heavy")));
-
-  const trimmedHeavy = heavyResponse.trim();
-
-  // Guard: the heavy model should not re-emit __ESCALATE__; replace with fallback
-  // rather than leaking the raw signal string to the user.
-  if (ESCALATE_SIGNAL_RE.test(trimmedHeavy)) {
-    logger.warn(`[${reqId}] Model 3 emitted __ESCALATE__ — replacing with fallback`);
-    await sendChunked(message, MSG_HEAVY_ESCALATE_FALLBACK);
-    return MSG_HEAVY_ESCALATE_FALLBACK;
+  // ── No escalation: remote answer is final ────────────────────────────────
+  if (localAvailable) {
+    logger.debug(`[${reqId}] LLM self-routing: no escalation needed (score=${score ?? "N/A"})`);
   }
-
-  // Handle search signal from Model 3 as well
-  const searchMatch = SEARCH_SIGNAL_RE.exec(trimmedHeavy);
-  if (searchMatch) {
-    if (config.search.enabled === "off") {
-      logger.warn(`[${reqId}] __SEARCH__ signal dropped — SEARCH=off`);
-      return await retryWithoutSearch(reqId, message, heavyMessages, config.llama.localLlamaUrl, modelOpts("heavy"));
-    }
-    if (config.search.mode === "command") {
-      logger.warn(`[${reqId}] __SEARCH__ auto-signal dropped — SEARCH_MODE=command`);
-      return await retryWithoutSearch(reqId, message, heavyMessages, config.llama.localLlamaUrl, modelOpts("heavy"));
-    }
-    const finalResponse = await handleSearchSignal(
-      reqId,
-      message,
-      heavyMessages,
-      heavyResponse,
-      config.llama.localLlamaUrl,
-      modelOpts("heavy")
-    );
-    await sendChunked(message, finalResponse);
-    return finalResponse;
-  }
-
-  // 5. Post Model 3's response
-  await sendChunked(message, heavyResponse);
-  return heavyResponse;
+  await sendChunked(message, answer);
+  return answer;
 }
 
 // ── Search flow ───────────────────────────────────────────────────────────────
@@ -619,21 +545,14 @@ export async function handleForcedSearch(message, query) {
 
   await semaphore.acquire();
   try {
-    // Pick the endpoint based on current routing state
-    const useLocal = isLocalAvailable();
-    const baseUrl = useLocal
-      ? config.llama.localLlamaUrl
-      : config.llama.vpsUrl;
-    const llmOpts = modelOpts(useLocal ? "common" : "vps");
-
-    if (useLocal) {
-      await switchToCommon();
-    }
+    // Use remote model (always available for forced search)
+    const baseUrl = config.llama.remoteUrl;
+    const llmOpts = modelOpts("remote");
 
     // Get the current history for this user (no new user message pushed)
     const messages = historyService.getMessages(
       message.author.id,
-      useLocal ? config.llm.systemPromptCommon : config.llm.systemPromptVps
+      config.llm.systemPromptRemote
     );
 
     // Post acknowledgement
@@ -686,57 +605,21 @@ export async function handleForcedSearch(message, query) {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
- * Handles a forced escalation command (!escalate).
- * Switches directly to the heavy model and runs handleEscalation.
- *
- * @param {import("discord.js").Message} message
+ * Re-runs the model asking it to answer directly, without searching.
+ * Used when search is disabled (SEARCH=off) or suppressed (SEARCH_MODE=command).
  */
-export async function handleForcedEscalation(message) {
-  if (!rateLimiter.check(message.author.id)) {
-    const retryAfterSec = rateLimitRetrySec(message.author.id);
-    await message.reply(`⏳ You're sending messages too fast. Please wait ${retryAfterSec}s before trying again.`).catch(() => {});
-    return;
-  }
-
-  const reqId = randomUUID().slice(0, 8);
-
-  if (!isLocalAvailable()) {
-    logger.info(`[${reqId}] Forced escalation attempted but local agent is offline — aborting`);
-    await message.reply("⚠️ Local agent is offline — escalation is not available right now.").catch(() => {});
-    return;
-  }
-
-  logger.info(`[${reqId}] Forced escalation command from ${message.author.tag}`);
-
-  await message.channel.sendTyping();
-  const typingInterval = setInterval(() => message.channel.sendTyping().catch(() => {}), 8_000);
-
-  await semaphore.acquire();
-  try {
-    await switchToCommon();
-
-    // Strip command token and mentions from the raw message, then push any
-    // remaining text as the user's question so handleEscalation has context.
-    const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const questionText = message.content
-      .replace(/<@!?\d+>/g, "")
-      .replace(new RegExp(escapeRegex(config.escalate.command), "gi"), "")
-      .replace(/\s{2,}/g, " ")
-      .trim();
-    if (questionText) {
-      historyService.pushUser(message.author.id, questionText);
-    }
-
-    const messages = historyService.getMessages(message.author.id, config.llm.systemPromptCommon);
-    const fullResponse = await handleEscalation(reqId, message, messages);
-    historyService.pushAssistant(message.author.id, fullResponse);
-  } catch (err) {
-    logger.error(`[${reqId}] Error during forced escalation:`, err);
-    await message.reply("⚠️ Something went wrong during escalation.").catch(() => {});
-  } finally {
-    semaphore.release();
-    clearInterval(typingInterval);
-  }
+async function retryWithoutSearch(reqId, message, messages, baseUrl, opts = {}) {
+  logger.debug(`[${reqId}] retryWithoutSearch — re-running without search context`);
+  const retryMessages = [
+    ...messages,
+    {
+      role: "user",
+      content: "Please answer directly without searching. Use only what you already know.",
+    },
+  ];
+  const retryResponse = stripThinkBlock(await llamaChat(baseUrl, retryMessages, opts));
+  await sendChunked(message, retryResponse);
+  return retryResponse;
 }
 
 /**

@@ -39,6 +39,36 @@ function loadSystemPromptForRole(role) {
 }
 
 /**
+ * Loads the remote (Bot #1) system prompt.
+ * Tries sysprompt_remote.txt first, falls back to sysprompt_vps.txt for
+ * backward compatibility.
+ */
+function loadSystemPromptRemote() {
+  try {
+    const filePath = new URL("../sysprompt_remote.txt", import.meta.url);
+    return fs.readFileSync(filePath, "utf-8").trim();
+  } catch {
+    // fall back to legacy vps prompt
+  }
+  return loadSystemPromptForRole("vps");
+}
+
+/**
+ * Loads the local (Bot #2) system prompt.
+ * Tries sysprompt_local.txt first, falls back to sysprompt_common.txt for
+ * backward compatibility.
+ */
+function loadSystemPromptLocal() {
+  try {
+    const filePath = new URL("../sysprompt_local.txt", import.meta.url);
+    return fs.readFileSync(filePath, "utf-8").trim();
+  } catch {
+    // fall back to legacy common prompt
+  }
+  return loadSystemPromptForRole("common");
+}
+
+/**
  * Strips disabled signal blocks from a raw system prompt based on current
  * runtime config.  Applied once at startup so every LLM call uses a
  * pre-cleaned prompt — the model is never taught signals it cannot use.
@@ -47,9 +77,10 @@ function loadSystemPromptForRole(role) {
  *   "Replace <concise web search query>..." line) when SEARCH=off or
  *   SEARCH_MODE=command.
  * - Removes the __ESCALATE__ block (from "__ESCALATE__" through the
- *   "Do NOT use for:..." line) when ESCALATE≠on or ESCALATE_MODE=command.
+ *   "Do NOT use for:..." line) if present — kept for backward compat with
+ *   old sysprompt files that still include the block.
  * - Removes example lines referencing stripped signals.
- * - Removes the "=== SIGNALS ===" header when both blocks are stripped.
+ * - Removes the "=== SIGNALS ===" header when all signal blocks are stripped.
  * - Collapses runs of 3+ blank lines to 2.
  *
  * @param {string} raw
@@ -58,8 +89,11 @@ function loadSystemPromptForRole(role) {
 function buildSystemPrompt(raw) {
   const stripSearch =
     optional("SEARCH", "on") === "off" || optional("SEARCH_MODE", "auto") === "command";
-  const stripEscalate =
-    optional("ESCALATE", "on") !== "on" || optional("ESCALATE_MODE", "auto") === "command";
+
+  // __ESCALATE__ is always stripped — it no longer exists in the new architecture.
+  // We keep the stripping logic so old sysprompt files (still containing the
+  // __ESCALATE__ block) are silently cleaned up on load.
+  const stripEscalate = true;
 
   let text = raw;
 
@@ -85,7 +119,7 @@ function buildSystemPrompt(raw) {
     text = text.replace(/^"[^"]*"\s*→\s*__SEARCH__:[^\n]*\n?/gm, "");
   }
 
-  // Remove the === SIGNALS === header when both blocks are stripped
+  // Remove the === SIGNALS === header when all blocks are stripped
   // (the section is now empty).
   if (stripEscalate && stripSearch) {
     text = text.replace(/^=== SIGNALS ===\n?/m, "");
@@ -121,7 +155,7 @@ const _llamaGlobals = {
 /**
  * Builds per-model inference params, falling back to the global defaults.
  * Must be called AFTER _llamaGlobals is defined.
- * @param {'VPS'|'COMMON'|'HEAVY'} suffix  - uppercase role suffix
+ * @param {'REMOTE'|'LOCAL'} suffix  - uppercase role suffix
  */
 function inferenceParams(suffix) {
   return {
@@ -135,9 +169,31 @@ function inferenceParams(suffix) {
   };
 }
 
+// ── Discord token resolution ──────────────────────────────────────────────────
+// DISCORD_TOKEN_REMOTE is the canonical name for the remote bot token.
+// Falls back to DISCORD_TOKEN for backward compatibility (logs a deprecation
+// warning at startup when the fallback is used).
+
+const _discordTokenRemote = (() => {
+  if (process.env.DISCORD_TOKEN_REMOTE) return process.env.DISCORD_TOKEN_REMOTE;
+  if (process.env.DISCORD_TOKEN) {
+    // Deprecation warning is emitted later, after the logger is available.
+    // We set a flag here so we can log it in index.js.
+    process.env._DISCORD_TOKEN_DEPRECATED = "1";
+    return process.env.DISCORD_TOKEN;
+  }
+  throw new Error(
+    "Missing required environment variable: DISCORD_TOKEN_REMOTE " +
+    "(set DISCORD_TOKEN_REMOTE for the remote bot; legacy DISCORD_TOKEN is also accepted but deprecated)"
+  );
+})();
+
 export const config = {
   discord: {
-    token: required("DISCORD_TOKEN"),
+    // Bot #1 — Remote model (always-on VPS)
+    tokenRemote: _discordTokenRemote,
+    // Bot #2 — Local model (optional)
+    tokenLocal: optional("DISCORD_TOKEN_LOCAL", ""),
     allowedChannelIds: optional("ALLOWED_CHANNEL_IDS", "")
       .split(",")
       .map((s) => s.trim())
@@ -152,20 +208,22 @@ export const config = {
     modelPath: optional("VPS_MODEL_PATH", ""),
   },
   llama: {
-    // VPS llama-server — always on, always available (Model 1 / fallback)
-    vpsUrl: optional("VPS_LLAMA_URL", "http://localhost:8080/v1"),
-    vpsModelFile: optional("VPS_MODEL_FILE", "phi4-mini.Q4_K_M.gguf"),
+    // Remote llama-server — always on, always available (Bot #1)
+    remoteUrl: optional("VPS_LLAMA_URL", "http://localhost:8080/v1"),
+    remoteModelFile: optional("VPS_MODEL_FILE", "phi4-mini.Q4_K_M.gguf"),
 
-    // Local llama-server — via Tailscale, managed by the local agent
-    localLlamaUrl: optional("LOCAL_LLAMA_URL", ""),
+    // Local llama-server — via Tailscale, managed by the local agent (Bot #2)
+    localUrl: optional("LOCAL_LLAMA_URL", ""),
 
-    // Windows local agent — manages llama-server process
+    // Local agent — manages the llama-server process on the local machine
     agentUrl: optional("LOCAL_AGENT_URL", ""),
     agentToken: optional("LOCAL_AGENT_TOKEN", ""),
 
-    // Local model filenames (passed to agent to load into llama-server)
-    localModelCommonFile: optional("LOCAL_MODEL_COMMON_FILE", ""),
-    localModelHeavyFile: optional("LOCAL_MODEL_HEAVY_FILE", ""),
+    // Local model filename (passed to agent to load into llama-server)
+    localModelFile: optional("LOCAL_MODEL_FILE",
+      // Backward compat: fall back to the old COMMON var
+      optional("LOCAL_MODEL_COMMON_FILE", "")
+    ),
 
     // Global inference parameters (used as fallback for per-model params below)
     ..._llamaGlobals,
@@ -175,33 +233,43 @@ export const config = {
 
     // ── Per-model llama.cpp extra args (passed to agent /start) ──────────────
     // Falls back to LLAMA_EXTRA_ARGS if the role-specific var is not set.
-    extraArgsVps:    optional("LLAMA_EXTRA_ARGS_VPS",    _extraArgsFallback),
-    extraArgsCommon: optional("LLAMA_EXTRA_ARGS_COMMON", _extraArgsFallback),
-    extraArgsHeavy:  optional("LLAMA_EXTRA_ARGS_HEAVY",  _extraArgsFallback),
+    extraArgsRemote: optional("LLAMA_EXTRA_ARGS_VPS",   _extraArgsFallback),
+    extraArgsLocal:  optional("LLAMA_EXTRA_ARGS_LOCAL",
+      // Backward compat: fall back to the old COMMON var
+      optional("LLAMA_EXTRA_ARGS_COMMON", _extraArgsFallback)
+    ),
 
     // ── Per-model context size (passed to agent /start) ───────────────────────
     // Falls back to LLAMA_CONTEXT_SIZE if the role-specific var is not set.
-    contextSizeVps:    parseInt(optional("LLAMA_CONTEXT_SIZE_VPS",    _ctxFallback), 10) || 0,
-    contextSizeCommon: parseInt(optional("LLAMA_CONTEXT_SIZE_COMMON", _ctxFallback), 10) || 0,
-    contextSizeHeavy:  parseInt(optional("LLAMA_CONTEXT_SIZE_HEAVY",  _ctxFallback), 10) || 0,
+    contextSizeRemote: parseInt(optional("LLAMA_CONTEXT_SIZE_VPS",   _ctxFallback), 10) || 0,
+    contextSizeLocal:  parseInt(
+      optional("LLAMA_CONTEXT_SIZE_LOCAL",
+        // Backward compat: fall back to the old COMMON var
+        optional("LLAMA_CONTEXT_SIZE_COMMON", _ctxFallback)
+      ),
+      10
+    ) || 0,
 
     // ── Per-model fetch timeouts ───────────────────────────────────────────────
     // Falls back to LLM_FETCH_TIMEOUT_MS if the role-specific var is not set.
-    fetchTimeoutVps:    parseInt(optional("LLM_FETCH_TIMEOUT_MS_VPS",    String(_timeoutFallback)), 10),
-    fetchTimeoutCommon: parseInt(optional("LLM_FETCH_TIMEOUT_MS_COMMON", String(_timeoutFallback)), 10),
-    fetchTimeoutHeavy:  parseInt(optional("LLM_FETCH_TIMEOUT_MS_HEAVY",  String(_timeoutFallback)), 10),
+    fetchTimeoutRemote: parseInt(optional("LLM_FETCH_TIMEOUT_MS_VPS",   String(_timeoutFallback)), 10),
+    fetchTimeoutLocal:  parseInt(
+      optional("LLM_FETCH_TIMEOUT_MS_LOCAL",
+        // Backward compat: fall back to the old COMMON var
+        optional("LLM_FETCH_TIMEOUT_MS_COMMON", String(_timeoutFallback))
+      ),
+      10
+    ),
 
     // ── Per-model inference parameters ────────────────────────────────────────
     // Each field falls back to the global value if the role-specific var is unset.
-    paramsVps:    inferenceParams("VPS"),
-    paramsCommon: inferenceParams("COMMON"),
-    paramsHeavy:  inferenceParams("HEAVY"),
+    paramsRemote: inferenceParams("REMOTE"),
+    paramsLocal:  inferenceParams("LOCAL"),
   },
   llm: {
-    systemPrompt:       buildSystemPrompt(loadSystemPrompt()),           // kept for backward compat
-    systemPromptVps:    buildSystemPrompt(loadSystemPromptForRole("vps")),
-    systemPromptCommon: buildSystemPrompt(loadSystemPromptForRole("common")),
-    systemPromptHeavy:  buildSystemPrompt(loadSystemPromptForRole("heavy")),
+    systemPrompt:        buildSystemPrompt(loadSystemPrompt()),    // kept for backward compat
+    systemPromptRemote:  buildSystemPrompt(loadSystemPromptRemote()),
+    systemPromptLocal:   buildSystemPrompt(loadSystemPromptLocal()),
   },
   availability: {
     pollIntervalMs: parseInt(
@@ -209,11 +277,33 @@ export const config = {
       10
     ),
   },
-  escalate: {
-    enabled: optional("ESCALATE",         "on"),       // "on" | "off"
-    mode:    optional("ESCALATE_MODE",    "auto"),     // "auto" | "command"
-    command: optional("ESCALATE_COMMAND", "!escalate"), // must start with !
-    type:    optional("ESCALATE_TYPE",    "model"),    // "model" | "args"
+  complexity: {
+    // Minimum character count of a user prompt to be considered "long"
+    promptLength: parseInt(optional("COMPLEXITY_PROMPT_LENGTH", "300"), 10),
+    // Comma-separated keywords that indicate a code-related request
+    keywordsCode: optional(
+      "COMPLEXITY_KEYWORDS_CODE",
+      "debug,refactor,implement,algorithm,function,class,compile,syntax,error,exception,stack trace,regex,sql,query,optimize"
+    )
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+    // Comma-separated keywords that indicate a planning / architecture request
+    keywordsPlan: optional(
+      "COMPLEXITY_KEYWORDS_PLAN",
+      "architecture,design,plan,roadmap,strategy,system design,how to build,how to implement,step by step,guide me,walk me through"
+    )
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
+  },
+  localPresence: {
+    // How long (ms) the local bot stays Online after finishing a task before
+    // returning to Idle.  0 = return to Idle immediately.
+    cooldownMs: parseInt(optional("LOCAL_PRESENCE_COOLDOWN_MS", "30000"), 10),
+    // How long (ms) the local model may be idle before being stopped.
+    // 0 = never auto-stop (default).
+    idleMs: parseInt(optional("LOCAL_MODEL_IDLE_MS", "0"), 10),
   },
   search: {
     searxngBaseUrl: optional("SEARXNG_BASE_URL", ""),

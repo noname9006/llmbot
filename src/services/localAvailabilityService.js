@@ -1,6 +1,10 @@
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 import { resetActiveModelOnReconnect } from "./agentService.js";
+import {
+  setLocalPresenceIdle,
+  setLocalPresenceDnd,
+} from "./localPresenceService.js";
 
 // ── Agent availability ────────────────────────────────────────────────────────
 
@@ -51,10 +55,14 @@ async function pollAgent() {
       logger.info("Local agent: offline → online");
       // Reset cached model state so the next request triggers a fresh /start
       resetActiveModelOnReconnect();
+      // Update local bot presence to Idle (model is ready but not processing)
+      setLocalPresenceIdle();
     } else {
       agentOfflineSince = Date.now();
       agentOnlineSince = null;
       logger.info("Local agent: online → offline");
+      // Update local bot presence to DND (model unavailable)
+      setLocalPresenceDnd();
     }
   }
 }
@@ -110,7 +118,7 @@ export function agentOnlineDurationMs() {
 let isVpsOnline = false;
 
 async function pollVps() {
-  const vpsUrl = config.llama.vpsUrl;
+  const vpsUrl = config.llama.remoteUrl;
   if (!vpsUrl) {
     isVpsOnline = false;
     return;
@@ -129,9 +137,9 @@ async function pollVps() {
 
   if (wasOnline !== isVpsOnline) {
     if (isVpsOnline) {
-      logger.info("VPS llama-server: offline → online");
+      logger.info("Remote llama-server: offline → online");
     } else {
-      logger.warn("VPS llama-server: online → offline (fallback route is down!)");
+      logger.warn("Remote llama-server: online → offline (fallback route is down!)");
     }
   }
 }

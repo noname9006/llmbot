@@ -67,22 +67,22 @@ function extractPort(url) {
  */
 export async function startVpsLlamaServer() {
   if (!config.vpsLlama.enabled) {
-    logger.info("[vpsLlama] VPS_LLAMA_ENABLED=false — skipping llama-server launch");
+    logger.info("[remoteLlama] VPS_LLAMA_ENABLED=false — skipping llama-server launch");
     return;
   }
 
   const bin = config.vpsLlama.bin;
   const modelPath = config.vpsLlama.modelPath;
-  const port = extractPort(config.llama.vpsUrl);
-  const contextSize = config.llama.contextSizeVps;
-  const extraArgs = config.llama.extraArgsVps;
+  const port = extractPort(config.llama.remoteUrl);
+  const contextSize = config.llama.contextSizeRemote;
+  const extraArgs = config.llama.extraArgsRemote;
 
   if (!modelPath) {
-    throw new Error("[vpsLlama] VPS_MODEL_PATH is required when VPS_LLAMA_ENABLED=true");
+    throw new Error("[remoteLlama] VPS_MODEL_PATH is required when VPS_LLAMA_ENABLED=true");
   }
 
   if (!fs.existsSync(bin)) {
-    throw new Error(`[vpsLlama] llama-server binary not found: ${bin}`);
+    throw new Error(`[remoteLlama] llama-server binary not found: ${bin}`);
   }
 
   const args = [
@@ -99,21 +99,21 @@ export async function startVpsLlamaServer() {
     args.push(...shellSplit(extraArgs));
   }
 
-  logger.info(`[vpsLlama] Spawning llama-server: ${bin} ${args.join(" ")}`);
+  logger.info(`[remoteLlama] Spawning llama-server: ${bin} ${args.join(" ")}`);
 
   const proc = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
 
   proc.stdout.on("data", (data) => {
-    logger.debug(`[vpsLlama] ${data.toString().trim()}`);
+    logger.debug(`[remoteLlama] ${data.toString().trim()}`);
   });
 
   proc.stderr.on("data", (data) => {
-    logger.debug(`[vpsLlama] ${data.toString().trim()}`);
+    logger.debug(`[remoteLlama] ${data.toString().trim()}`);
   });
 
   proc.on("error", (err) => {
     if (vpsProcess === proc) {
-      logger.error(`[vpsLlama] llama-server process error: ${err.message}`);
+      logger.error(`[remoteLlama] llama-server process error: ${err.message}`);
     }
   });
 
@@ -121,7 +121,7 @@ export async function startVpsLlamaServer() {
     if (vpsProcess === proc) {
       // vpsProcess still points to this proc — exit was not triggered by stopVpsLlamaServer
       vpsProcess = null;
-      logger.warn(`[vpsLlama] llama-server exited unexpectedly (code ${code})`);
+      logger.warn(`[remoteLlama] llama-server exited unexpectedly (code ${code})`);
     }
   });
 
@@ -141,7 +141,7 @@ export async function startVpsLlamaServer() {
       if (res.ok) {
         const body = await res.json().catch(() => null);
         if (body?.status === "ok") {
-          logger.info(`[vpsLlama] llama-server ready on port ${port}`);
+          logger.info(`[remoteLlama] llama-server ready on port ${port}`);
           return;
         }
       }
@@ -151,7 +151,7 @@ export async function startVpsLlamaServer() {
 
     // Check if the process died while we were waiting
     if (vpsProcess !== proc) {
-      throw new Error("[vpsLlama] llama-server exited before becoming ready");
+      throw new Error("[remoteLlama] llama-server exited before becoming ready");
     }
 
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
@@ -164,11 +164,11 @@ export async function startVpsLlamaServer() {
   } catch {
     // Ignore — process may already be gone
   }
-  throw new Error(`[vpsLlama] llama-server did not become ready within ${TIMEOUT_MS / 1000}s`);
+  throw new Error(`[remoteLlama] llama-server did not become ready within ${TIMEOUT_MS / 1000}s`);
 }
 
 /**
- * Sends a minimal inference request to the VPS llama-server to warm up the
+ * Sends a minimal inference request to the remote llama-server to warm up the
  * model (load weights into VRAM / populate KV cache) so the first real user
  * message is not delayed by a cold start.
  *
@@ -176,19 +176,19 @@ export async function startVpsLlamaServer() {
  *
  * @returns {Promise<void>}
  */
-export async function warmupVpsModel() {
+export async function warmupRemoteModel() {
   try {
     const WARMUP_TIMEOUT_MS = 30_000;
-    const url = config.llama.vpsUrl;
+    const url = config.llama.remoteUrl;
 
-    logger.info("[vpsLlama] Warming up model (sending minimal inference request)…");
+    logger.info("[remoteLlama] Warming up model (sending minimal inference request)…");
 
     const res = await fetch(`${url}/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         messages: [
-          { role: "system", content: config.llm.systemPromptVps },
+          { role: "system", content: config.llm.systemPromptRemote },
           { role: "user",   content: "Hi" },
         ],
         max_tokens: 1,
@@ -198,13 +198,65 @@ export async function warmupVpsModel() {
     });
 
     if (res.ok) {
-      logger.info("[vpsLlama] Model warm-up complete");
+      logger.info("[remoteLlama] Model warm-up complete");
     } else {
       const text = await res.text().catch(() => "(unreadable)");
-      logger.warn(`[vpsLlama] Warm-up request returned non-OK status ${res.status}: ${text}`);
+      logger.warn(`[remoteLlama] Warm-up request returned non-OK status ${res.status}: ${text}`);
     }
   } catch (err) {
-    logger.warn(`[vpsLlama] Warm-up request failed (non-fatal): ${err.message}`);
+    logger.warn(`[remoteLlama] Warm-up request failed (non-fatal): ${err.message}`);
+  }
+}
+
+/**
+ * Backward-compatible alias — kept so any existing callers continue to work.
+ * @returns {Promise<void>}
+ */
+export const warmupVpsModel = warmupRemoteModel;
+
+/**
+ * Sends a minimal inference request to the local llama-server to warm up the
+ * model after the agent comes online.  Reduces first-response latency for
+ * LOCAL_MODEL requests.
+ *
+ * Non-fatal: a failure is logged as a warning but does NOT throw.
+ *
+ * @returns {Promise<void>}
+ */
+export async function warmupLocalModel() {
+  const url = config.llama.localUrl;
+  if (!url) {
+    logger.debug("[localLlama] LOCAL_LLAMA_URL not configured — skipping warmup");
+    return;
+  }
+
+  try {
+    const WARMUP_TIMEOUT_MS = 30_000;
+
+    logger.info("[localLlama] Warming up local model (sending minimal inference request)…");
+
+    const res = await fetch(`${url}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: [
+          { role: "system", content: config.llm.systemPromptLocal },
+          { role: "user",   content: "Hi" },
+        ],
+        max_tokens: 1,
+        stream: false,
+      }),
+      signal: AbortSignal.timeout(WARMUP_TIMEOUT_MS),
+    });
+
+    if (res.ok) {
+      logger.info("[localLlama] Local model warm-up complete");
+    } else {
+      const text = await res.text().catch(() => "(unreadable)");
+      logger.warn(`[localLlama] Local warm-up request returned non-OK status ${res.status}: ${text}`);
+    }
+  } catch (err) {
+    logger.warn(`[localLlama] Local warm-up request failed (non-fatal): ${err.message}`);
   }
 }
 
@@ -235,7 +287,7 @@ export async function stopVpsLlamaServer() {
 
     proc.once("exit", () => {
       clearTimeout(sigkillTimer);
-      logger.info("[vpsLlama] llama-server stopped");
+      logger.info("[remoteLlama] llama-server stopped");
       resolve();
     });
 
@@ -244,7 +296,7 @@ export async function stopVpsLlamaServer() {
     } catch {
       // Process already gone — resolve immediately
       clearTimeout(sigkillTimer);
-      logger.info("[vpsLlama] llama-server stopped");
+      logger.info("[remoteLlama] llama-server stopped");
       resolve();
     }
   });

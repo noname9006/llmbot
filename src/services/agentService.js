@@ -1,19 +1,17 @@
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 
-// Which local model is currently loaded: null | 'common' | 'heavy'
+// Which local model is currently loaded: null | 'local'
 let activeLocalModel = null;
 
-// Idle timer reference for Model 3 (heavy)
-let heavyIdleTimer = null;
+// Idle timer reference for the local model
+let localIdleTimer = null;
 
 // Monotonically-increasing counter; incremented on every reconnect.
 // Each pendingSwitch closure captures the generation at creation time and
 // guards its state-update callbacks so a stale in-flight /start cannot
 // overwrite the null that resetActiveModelOnReconnect() just set.
 let generation = 0;
-
-const HEAVY_IDLE_MS = 15 * 60 * 1000; // 15 minutes
 
 // Timeout for model start requests — loading a large model can take a while
 const START_TIMEOUT_MS = 120_000;
@@ -79,7 +77,7 @@ function checkCircuit() {
 
 /**
  * Returns which local model is currently active.
- * @returns {null | 'common' | 'heavy'}
+ * @returns {null | 'local'}
  */
 export function getActiveLocalModel() {
   return activeLocalModel;
@@ -107,52 +105,36 @@ export function resetActiveModelOnReconnect() {
 }
 
 /**
- * Ensures Model 2 (common) is the active local model.
+ * Ensures the local model is the active local model.
  * Concurrent callers share a single in-flight /start promise so only one
  * request reaches the agent at a time and the circuit-breaker counts each
  * distinct switch attempt (not the number of concurrent waiters).
- * Clears the heavy idle timer if it was running.
+ * Resets the local idle timer if configured.
  */
-export async function switchToCommon() {
-  clearHeavyIdleTimer();
+export async function ensureLocalModel() {
+  resetLocalIdleTimer();
 
-  // If common and heavy are the same model file, skip the unload/reload when
-  // switching back from heavy — the model is already loaded.
-  const cFile = config.llama.localModelCommonFile;
-  const hFile = config.llama.localModelHeavyFile;
-  if (cFile && hFile && cFile === hFile && activeLocalModel === "heavy") {
-    logger.info("switchToCommon: common and heavy models are identical — skipping reload");
-    activeLocalModel = "common";
-    return;
-  }
-
-  // JS single-thread guarantee: the check and pendingSwitch assignment are
-  // atomic from the event-loop perspective — no other caller can sneak between
-  // "pendingSwitch is null" and "pendingSwitch = …".
-  while (activeLocalModel !== "common") {
+  while (activeLocalModel !== "local") {
     if (pendingSwitch) {
-      // Wait for the in-flight switch (could be common or heavy); re-evaluate.
+      // Wait for the in-flight switch; re-evaluate afterwards.
       await pendingSwitch.catch(() => {});
       continue;
     }
 
     const gen = generation; // capture before going async
-    logger.debug("switchToCommon: starting /start for common model");
-    // Capture the promise reference so .finally only clears pendingSwitch if
-    // it still refers to THIS promise — prevents stomping a new promise that
-    // was assigned after resetActiveModelOnReconnect() ran concurrently.
-    const p = agentStart(config.llama.localModelCommonFile, {
-      role: "common",
-      extraArgs: config.llama.extraArgsCommon,
-      contextSize: config.llama.contextSizeCommon,
+    logger.debug("ensureLocalModel: starting /start for local model");
+    const p = agentStart(config.llama.localModelFile, {
+      role: "local",
+      extraArgs: config.llama.extraArgsLocal,
+      contextSize: config.llama.contextSizeLocal,
     })
       .then(() => {
-        if (generation === gen) activeLocalModel = "common";
-        else logger.debug("switchToCommon: skipping stale state update (generation changed)");
+        if (generation === gen) activeLocalModel = "local";
+        else logger.debug("ensureLocalModel: skipping stale state update (generation changed)");
       })
       .catch((err) => {
         if (generation === gen) activeLocalModel = null;
-        else logger.debug("switchToCommon: skipping stale error reset (generation changed)");
+        else logger.debug("ensureLocalModel: skipping stale error reset (generation changed)");
         throw err;
       })
       .finally(() => {
@@ -165,94 +147,40 @@ export async function switchToCommon() {
 }
 
 /**
- * Ensures Model 3 (heavy) is the active local model.
- * Asks the agent to (re)start llama-server with the heavy model.
- * Starts the 15-minute idle timer on success.
- * Concurrent callers share the single in-flight switch promise.
- */
-export async function switchToHeavy() {
-  if (activeLocalModel === "heavy") {
-    resetHeavyIdleTimer();
-    return;
-  }
-
-  // If common and heavy are the same model file, skip the unload/reload —
-  // the model is already loaded (as "common"); just re-label it.
-  const cFile = config.llama.localModelCommonFile;
-  const hFile = config.llama.localModelHeavyFile;
-  if (cFile && hFile && cFile === hFile && activeLocalModel === "common") {
-    logger.info("switchToHeavy: common and heavy models are identical — skipping reload");
-    activeLocalModel = "heavy";
-    resetHeavyIdleTimer();
-    return;
-  }
-
-  while (activeLocalModel !== "heavy") {
-    if (pendingSwitch) {
-      await pendingSwitch.catch(() => {});
-      continue;
-    }
-
-    const gen = generation; // capture before going async
-    logger.debug("switchToHeavy: starting /start for heavy model");
-    // Same reference-guard pattern as switchToCommon.
-    const p = agentStart(config.llama.localModelHeavyFile, {
-      role: "heavy",
-      extraArgs: config.llama.extraArgsHeavy,
-      contextSize: config.llama.contextSizeHeavy,
-    })
-      .then(() => {
-        if (generation === gen) activeLocalModel = "heavy";
-        else logger.debug("switchToHeavy: skipping stale state update (generation changed)");
-      })
-      .catch((err) => {
-        if (generation === gen) activeLocalModel = null;
-        else logger.debug("switchToHeavy: skipping stale error reset (generation changed)");
-        throw err;
-      })
-      .finally(() => {
-        if (pendingSwitch === p) pendingSwitch = null;
-      });
-    pendingSwitch = p;
-
-    await pendingSwitch;
-  }
-
-  resetHeavyIdleTimer();
-}
-
-/**
- * Resets (or starts) the 15-minute idle timer for Model 3.
+ * Resets (or starts) the local model idle timer.
  * When it fires, the agent is asked to stop llama-server.
+ * Only active when LOCAL_MODEL_IDLE_MS > 0.
  */
-export function resetHeavyIdleTimer() {
-  clearHeavyIdleTimer();
-  heavyIdleTimer = setTimeout(() => {
-    if (activeLocalModel !== "heavy") {
-      heavyIdleTimer = null;
+export function resetLocalIdleTimer() {
+  const idleMs = config.localPresence.idleMs;
+  if (idleMs <= 0) return; // 0 = no auto-stop (default)
+
+  clearLocalIdleTimer();
+  localIdleTimer = setTimeout(() => {
+    if (activeLocalModel !== "local") {
+      localIdleTimer = null;
       return;
     }
-    logger.info("Heavy model idle timeout — stopping local llama-server");
+    logger.info("Local model idle timeout — stopping local llama-server");
     activeLocalModel = null;
-    heavyIdleTimer = null;
+    localIdleTimer = null;
     agentStop().catch((err) => {
-      logger.warn(`Idle timer: agentStop failed: ${err.message}`);
+      logger.warn(`Local idle timer: agentStop failed: ${err.message}`);
     });
-  }, HEAVY_IDLE_MS);
+  }, idleMs);
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
 /**
- * Cancels the Model 3 idle timer without stopping llama-server.
- * Called internally (by switchToCommon / resetHeavyIdleTimer) and exported
- * for use during graceful shutdown so the idle callback cannot fire and
+ * Cancels the local model idle timer without stopping llama-server.
+ * Called during graceful shutdown so the idle callback cannot fire and
  * attempt an agentStop() after the process has already begun tearing down.
  */
-export function clearHeavyIdleTimer() {
-  if (heavyIdleTimer !== null) {
-    clearTimeout(heavyIdleTimer);
-    heavyIdleTimer = null;
+export function clearLocalIdleTimer() {
+  if (localIdleTimer !== null) {
+    clearTimeout(localIdleTimer);
+    localIdleTimer = null;
   }
 }
 
@@ -264,7 +192,7 @@ export function clearHeavyIdleTimer() {
  * @param {string} modelFile  - filename (e.g. "model.gguf"), looked up in the
  *                              agent's configured model directory
  * @param {object} [options]
- * @param {string} [options.role]         - model role ("common" | "heavy" | ""), used by the
+ * @param {string} [options.role]         - model role ("local"), used by the
  *                                          agent to apply per-model env var overrides
  * @param {string} [options.extraArgs]    - extra CLI args forwarded to llama-server
  * @param {number} [options.contextSize]  - context size override (0 = server default)
