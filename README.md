@@ -1,6 +1,29 @@
 # llmbot
 
-A Discord bot powered by **llama-server** (llama.cpp) with a three-tier local/VPS LLM setup using Gemma 4. The VPS runs a lightweight always-on fallback model; a Windows local machine with a GPU runs two additional models managed on demand. The bot routes every request to the best available model automatically, with optional web search via SearXNG and automatic escalation to a heavier model for complex queries.
+A Discord bot powered by **llama-server** (llama.cpp) with a three-tier local/VPS LLM setup using Gemma 4. The VPS runs a lightweight always-on fallback model; a Windows local machine with a GPU runs the heavier everyday and escalation models, managed by a small HTTP agent.
+
+---
+
+## Table of Contents
+
+- [Architecture](#architecture)
+- [Prerequisites](#prerequisites)
+- [Setup](#setup)
+  - [1. Clone and install](#1-clone-and-install)
+  - [2. Configure environment](#2-configure-environment)
+  - [3. Install llama.cpp](#3-install-llamacpp)
+    - [VPS (Linux)](#vps-linux)
+    - [Windows local machine](#windows-local-machine)
+  - [4. Set up Tailscale](#4-set-up-tailscale)
+  - [5. Set up SearXNG (search engine)](#5-set-up-searxng-search-engine)
+  - [6. System prompts](#6-system-prompts)
+  - [7. Run](#7-run)
+- [Commands](#commands)
+- [Environment Variables](#environment-variables)
+- [Gemma 4 Notes](#gemma-4-notes)
+- [Escalation Flow](#escalation-flow)
+- [Search Flow](#search-flow)
+- [Agent Setup](#agent-setup)
 
 ---
 
@@ -12,7 +35,15 @@ The bot uses three model roles:
 - **Common model** — everyday local GPU model. Managed by the Windows local agent, loaded on first use and kept resident. Handles the majority of requests when the local agent is online.
 - **Heavy model** — loaded on escalation. Also managed by the Windows local agent. Swapped in (or run with alternative inference args) when the common model signals a query is too complex.
 
-**Routing logic:** every incoming message goes to the common model if the local agent is up; otherwise it falls back to the VPS model. The common model can emit an `__ESCALATE__` signal to trigger the heavy model.
+**Routing logic:** every incoming message goes to the common model if the local agent is up; otherwise it falls back to the VPS model. The common model can emit an `__ESCALATE__` signal to trigger the heavy model automatically (configurable).
+
+```
+[Discord]
+    └── [VPS: Discord bot + llama-server (fallback)]
+              └── HTTP over Tailscale → [Windows: agent :3000]
+                                              └── spawns/kills → [llama-server :8081]
+                                                                    <model dir>\<model>.gguf
+```
 
 ---
 
@@ -21,6 +52,7 @@ The bot uses three model roles:
 - **Node.js 18+**
 - A running `llama-server` instance for the VPS model (always-on fallback)
 - Windows local agent (see [`/agent`](./agent)) for local GPU models — manages loading/unloading llama-server on the Windows machine
+- **Tailscale** — connects the VPS bot to the Windows agent over a private network
 - A [SearXNG](https://searxng.github.io/searxng/) instance (optional, for web search)
 - A Discord bot token and application
 
@@ -44,33 +76,258 @@ cp .env.example .env
 
 Edit `.env` and fill in all required values. See the [Environment Variables](#environment-variables) section for a full reference.
 
-### 2a. VPS llama-server binary (VPS only)
+---
 
-Place the `llama-server` binary in the `llama/` directory at the project root:
+### 3. Install llama.cpp
+
+llama.cpp provides the `llama-server` binary that handles LLM inference. You need it in two places: on the **VPS** (for the always-on fallback model) and on the **Windows machine** (for local GPU models, managed by the agent).
+
+#### VPS (Linux)
+
+**Option A — pre-built binary (recommended)**
+
+Download the latest release binary for Linux from the [llama.cpp releases page](https://github.com/ggerganov/llama.cpp/releases). Pick the build that matches your hardware:
+
+| Hardware | Build tag to look for |
+|---|---|
+| CPU only | `llama-<version>-bin-ubuntu-x64.zip` |
+| NVIDIA GPU (CUDA) | `llama-<version>-bin-ubuntu-cuda-cu12...` |
+| AMD GPU (ROCm) | `llama-<version>-bin-ubuntu-rocm...` |
+
+```bash
+# Example — CPU/generic Linux build
+wget https://github.com/ggerganov/llama.cpp/releases/latest/download/llama-<version>-bin-ubuntu-x64.zip
+unzip llama-<version>-bin-ubuntu-x64.zip -d llama-bin
+```
+
+Place the binary where the bot can find it:
 
 ```bash
 mkdir -p llama
-cp /path/to/llama-server llama/
+cp llama-bin/llama-server llama/
 chmod +x llama/llama-server
 ```
 
-Set `VPS_MODEL_PATH` in `.env` to the full path of the GGUF model you want the VPS instance to use.
-The bot will start and stop `llama-server` automatically on launch/shutdown.
-To manage `llama-server` externally instead, set `VPS_LLAMA_ENABLED=false`.
+**Option B — build from source**
 
-### 3. System prompts
+```bash
+sudo apt-get update && sudo apt-get install -y build-essential cmake git
+git clone https://github.com/ggerganov/llama.cpp.git
+cd llama.cpp
+cmake -B build -DLLAMA_CURL=ON
+cmake --build build --config Release -j$(nproc)
+# copy the resulting binary
+cp build/bin/llama-server /path/to/llmbot/llama/llama-server
+```
+
+**Configure the bot to use it**
+
+In `.env`:
+
+```env
+VPS_LLAMA_BIN=./llama/llama-server
+VPS_MODEL_PATH=/absolute/path/to/your-model.gguf
+VPS_LLAMA_ENABLED=true
+```
+
+The bot starts and stops `llama-server` automatically on launch/shutdown. To manage it externally instead, set `VPS_LLAMA_ENABLED=false` and point `VPS_LLAMA_URL` at your running instance.
+
+---
+
+#### Windows local machine
+
+The Windows agent requires `llama-server.exe`. Use a pre-built binary from the [llama.cpp releases page](https://github.com/ggerganov/llama.cpp/releases).
+
+**Choosing the right build for your GPU**
+
+| GPU / backend | Build tag to look for |
+|---|---|
+| NVIDIA (CUDA) | `llama-<version>-bin-win-cuda-cu12...` |
+| AMD / Intel / other (Vulkan) | `llama-<version>-bin-win-vulkan-x64.zip` |
+| CPU only | `llama-<version>-bin-win-noavx-x64.zip` |
+
+> **AMD GPU users (RX 6000 / 7000 series, etc.):** use the **Vulkan** build. It does not require ROCm on Windows.
+
+```powershell
+# 1. Download and extract the zip (example: Vulkan build)
+Expand-Archive llama-<version>-bin-win-vulkan-x64.zip -DestinationPath C:\llama
+
+# 2. Verify the binary runs
+C:\llama\llama-server.exe --version
+```
+
+**Configure the agent to use it**
+
+In `agent/.env`:
+
+```env
+LLAMA_SERVER_BIN=C:\llama\llama-server.exe
+LLAMA_MODEL_DIR=F:\AI\.models
+```
+
+To enable GPU offload, add `-ngl 99` (offload all layers) to the per-model extra args:
+
+```env
+LLAMA_EXTRA_ARGS_COMMON=--flash-attn -ngl 99
+LLAMA_EXTRA_ARGS_HEAVY=--flash-attn -ngl 99
+```
+
+For Gemma 4 thinking mode (recommended), also append the thinking flag:
+
+```env
+# Windows PowerShell / .env — escape inner quotes with \"
+LLAMA_EXTRA_ARGS_COMMON=--flash-attn -ngl 99 --chat-template-kwargs '{"enable_thinking":true}'
+LLAMA_EXTRA_ARGS_HEAVY=--flash-attn -ngl 99 --chat-template-kwargs '{"enable_thinking":true}'
+```
+
+**Verify Vulkan drivers (AMD/Intel)**
+
+```powershell
+# Should print adapter info — if it errors, update your GPU drivers
+vulkaninfo --summary
+```
+
+---
+
+### 4. Set up Tailscale
+
+Tailscale creates a private WireGuard-based network between the VPS and the Windows machine so the bot can reach the Windows agent securely without exposing ports to the internet.
+
+#### Install Tailscale
+
+**VPS (Linux)**
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
+# Follow the auth URL printed in the terminal
+```
+
+**Windows**
+
+1. Download and install from [https://tailscale.com/download/windows](https://tailscale.com/download/windows).
+2. Sign in with the same Tailscale account used on the VPS.
+3. Both machines will appear in your [Tailscale admin console](https://login.tailscale.com/admin/machines) with `100.x.x.x` addresses.
+
+#### Verify connectivity
+
+```bash
+# On the VPS — check both machines are connected
+tailscale status
+
+# Ping the Windows machine from the VPS (use its Tailscale IP)
+ping 100.x.x.x
+```
+
+#### Configure the bot
+
+In the bot's `.env`, set the Windows agent URL using the Tailscale IP:
+
+```env
+LOCAL_AGENT_URL=http://100.x.x.x:3000
+LOCAL_AGENT_TOKEN=your-strong-secret-token
+```
+
+#### Windows Firewall rules
+
+Allow the agent and llama-server ports from the Tailscale subnet only:
+
+```powershell
+New-NetFirewallRule -DisplayName "llmbot-agent" `
+  -Direction Inbound -Protocol TCP -LocalPort 3000 `
+  -RemoteAddress "100.64.0.0/10" -Action Allow
+
+New-NetFirewallRule -DisplayName "llmbot llama-server" `
+  -Direction Inbound -Protocol TCP -LocalPort 8081 `
+  -RemoteAddress "100.64.0.0/10" -Action Allow
+```
+
+> **Tip:** port `8081` (llama-server) does **not** need to be reachable from the internet — only the agent (port `3000`) needs to be reachable from the VPS over Tailscale, and llama-server only needs to be reachable from the agent on the same machine.
+
+---
+
+### 5. Set up SearXNG (search engine)
+
+SearXNG is a self-hosted meta search engine. The bot uses it to fetch real-time web results and inject them into the model context.
+
+#### Quick start with Docker (recommended)
+
+```bash
+# 1. Create a working directory
+mkdir searxng && cd searxng
+
+# 2. Pull and run the official image
+docker run -d \
+  --name searxng \
+  --restart unless-stopped \
+  -p 8888:8080 \
+  -v "$(pwd)/searxng:/etc/searxng" \
+  -e SEARXNG_BASE_URL="http://localhost:8888/" \
+  searxng/searxng:latest
+```
+
+The instance is now reachable at `http://localhost:8888`.
+
+#### Enable JSON output (required)
+
+The bot queries SearXNG using the JSON format. By default it is disabled. Edit `searxng/settings.yml` (created automatically on first run):
+
+```yaml
+search:
+  formats:
+    - html
+    - json          # ← add this line
+```
+
+Then restart the container:
+
+```bash
+docker restart searxng
+```
+
+Verify it works:
+
+```bash
+curl "http://localhost:8888/search?q=test&format=json" | head -c 200
+```
+
+#### Install without Docker
+
+See the [official SearXNG installation guide](https://docs.searxng.org/admin/installation.html) for bare-metal setup. The requirement is only that the instance is reachable via HTTP and JSON format is enabled.
+
+#### Configure the bot
+
+In `.env`:
+
+```env
+SEARXNG_BASE_URL=http://localhost:8888
+SEARCH=on
+SEARCH_MODE=auto          # model emits __SEARCH__: <query> to trigger automatically
+SEARCH_RESULT_COUNT=5     # number of results injected into context
+```
+
+If SearXNG is on a different machine, use its address (Tailscale IP recommended if it is on the Windows box):
+
+```env
+SEARXNG_BASE_URL=http://100.x.x.x:8888
+```
+
+---
+
+### 6. System prompts
 
 The bot loads a separate system prompt file for each model role:
 
 | File | Role |
 |------|------|
 | `sysprompt_remote.txt` | Remote model system prompt |
-| `sysprompt.txt` / `sysprompt_common.txt` | Common model system prompt |
-| `sysprompt_heavy.txt` | Heavy model system prompt |
+| `sysprompt_common.txt` | Common model system prompt |
+| `sysprompt_local.txt` | Local fallback system prompt |
+| `sysprompt.txt` | Global fallback (used when role-specific file is missing) |
 
 Each file falls back to `sysprompt.txt` if the role-specific file does not exist. Edit these files to customise the bot's personality and behaviour per model.
 
-### 4. Run
+### 7. Run
 
 ```bash
 npm start
@@ -131,7 +388,7 @@ Copy `.env.example` to `.env` and edit it. Variables marked **required** have no
 
 ### System prompts
 
-System prompts are loaded from files, not environment variables. See [Setup → System prompts](#3-system-prompts) above. You can override the fallback system prompt via `SYSTEM_PROMPT=...` if you want to skip prompt files entirely.
+System prompts are loaded from files, not environment variables. See [Setup → System prompts](#6-system-prompts) above.
 
 ### Windows local agent
 
@@ -164,7 +421,7 @@ System prompts are loaded from files, not environment variables. See [Setup → 
 
 These are passed to `llama-server` when the agent starts a model. The global `LLAMA_EXTRA_ARGS` is used as a fallback when a role-specific var is not set.
 
-When using the **Windows local agent**, per-model extra args can also be set in the **agent's** `.env` (`LLAMA_EXTRA_ARGS_COMMON`, `LLAMA_EXTRA_ARGS_HEAVY`) and will take priority over bot-sent values. Include `-ngl <N>` in those vars to control GPU layer offload per model.
+When using the **Windows local agent**, per-model extra args can also be set in the **agent's** `.env` (`LLAMA_EXTRA_ARGS_COMMON`, `LLAMA_EXTRA_ARGS_HEAVY`) and will take priority over bot-sent values.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -258,8 +515,8 @@ Key points for running Gemma 4 with this bot:
 
   **Windows PowerShell** (in `agent/.env`):
   ```
-  LLAMA_EXTRA_ARGS_COMMON=--chat-template-kwargs "{\"enable_thinking\":true}"
-  LLAMA_EXTRA_ARGS_HEAVY=--chat-template-kwargs "{\"enable_thinking\":true}"
+  LLAMA_EXTRA_ARGS_COMMON=--chat-template-kwargs '{"enable_thinking":true}'
+  LLAMA_EXTRA_ARGS_HEAVY=--chat-template-kwargs '{"enable_thinking":true}'
   ```
 
   Alternatively, set them in the **bot's** `.env` (used as a fallback when the agent doesn't override):
@@ -272,10 +529,10 @@ Key points for running Gemma 4 with this bot:
 
   **Windows PowerShell** (in bot `.env`):
   ```
-  LLAMA_EXTRA_ARGS_COMMON=--chat-template-kwargs "{\"enable_thinking\":true}"
-  LLAMA_EXTRA_ARGS_HEAVY=--chat-template-kwargs "{\"enable_thinking\":true}"
+  LLAMA_EXTRA_ARGS_COMMON=--chat-template-kwargs '{"enable_thinking":true}'
+  LLAMA_EXTRA_ARGS_HEAVY=--chat-template-kwargs '{"enable_thinking":true}'
   ```
-- **Think blocks are automatically stripped** before the response is sent to Discord. The internal reasoning `<|channel>thought ... <channel|>` block is removed; only the final answer is shown.
+- **Think blocks are automatically stripped** before the response is sent to Discord. The internal reasoning block is removed; only the final answer is shown.
 - **Recommended inference parameters** for Gemma 4: `temperature=1.0`, `top_p=0.95`, `top_k=64`, `repetition_penalty=1.0`. Set these globally or per-model:
   ```
   LLM_TEMPERATURE=1.0
