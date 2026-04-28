@@ -9,7 +9,7 @@
  * returns the parsed result.  On any parse failure it returns a safe fallback
  * of `{ shouldEscalate: false }` so inference always continues.
  *
- * @param {string} rawText  - raw LLM response (think blocks already stripped)
+ * @param {string} rawText  - raw LLM response (thinking blocks already stripped)
  * @returns {{ answer: string, shouldEscalate: boolean, score: number|null }}
  */
 export function parseEscalationBlock(rawText) {

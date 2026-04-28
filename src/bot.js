@@ -97,9 +97,10 @@ if (config.discord.tokenLocal) {
     if (!message.author.bot) return;
     if (!localClient.user || !message.mentions.has(localClient.user.id)) return;
     // Only accept handoffs from the remote bot specifically.
-    // Reject if remoteClient is not ready yet — its user ID is unknown, so
-    // any bot message could slip through the guard.
-    if (!remoteClient.user || message.author.id !== remoteClient.user.id) return;
+    // Reject immediately if remoteClient is not ready yet — its user ID is
+    // unknown, so any bot message would slip through the second guard.
+    if (!remoteClient.user) return;
+    if (message.author.id !== remoteClient.user.id) return;
 
     onLocalMessage(message, localClient, remoteClient).catch((err) => {
       logger.error("Unhandled error in local messageCreate:", err);
