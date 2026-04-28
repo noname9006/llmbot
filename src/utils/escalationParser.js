@@ -71,6 +71,15 @@ export function buildEscalationInstruction() {
     `Set should_escalate=true when score>=4 or you are uncertain and more depth ` +
     `would genuinely help the user.\n` +
     `Do not change your style or content. Output the JSON block at the very end; ` +
-    `no extra text after it.`
+    `no extra text after it.\n\n` +
+    `When should_escalate is true, you MUST end your answer with a short, natural phrase that tags vale using the exact token __VALE__ (it will be substituted). Vary it each time. Examples (pick freely, do not copy verbatim):\n` +
+    `"mind taking a look __VALE__"\n` +
+    `"this one's for you __VALE__"\n` +
+    `"pinging __VALE__ on this 👀"\n` +
+    `"yo __VALE__ take it from here"\n` +
+    `"__VALE__ might wanna weigh in"\n` +
+    `"looping in __VALE__"\n` +
+    `"passing this one to __VALE__"\n` +
+    `Do NOT use "cc __VALE__". Include __VALE__ exactly once. Place it at the very end of your answer, after any other content.`
   );
 }

@@ -326,7 +326,7 @@ export const config = {
     maxRequests: parseInt(optional("RATE_LIMIT_MAX_REQUESTS", "5"), 10),
     windowMs: parseInt(optional("RATE_LIMIT_WINDOW_MS", "30000"), 10),
     // Global: max simultaneous LLM calls in flight
-    maxConcurrent: parseInt(optional("MAX_CONCURRENT_REQUESTS", "5"), 10),
+    maxConcurrent: parseInt(optional("MAX_CONCURRENT_REQUESTS", "1"), 10),
   },
   retry: {
     maxAttempts: parseInt(optional("RETRY_MAX_ATTEMPTS", "3"), 10),

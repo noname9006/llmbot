@@ -231,10 +231,13 @@ export async function onLocalMessage(message, localClient, remoteClient) {
   // The remote bot sent its relay message as a Discord *reply* to the original
   // human message, so message.reference.messageId points to it.
   let historyUserId;
+  let replyTarget = message; // fallback: reply to the relay message
+
   if (message.author.bot && message.reference) {
     try {
       const referenced = await message.channel.messages.fetch(message.reference.messageId);
       historyUserId = referenced.author.id;
+      replyTarget = referenced; // reply to original human message
       logger.debug(`[${reqId}] resolved historyUserId=${historyUserId} from message reference`);
     } catch (err) {
       // Without the original human's ID we cannot load their history or roll
@@ -312,7 +315,7 @@ export async function onLocalMessage(message, localClient, remoteClient) {
 
     done();
 
-    await sendChunked(message, finalResponse);
+    await sendChunked(replyTarget, finalResponse);
 
     // Persist the local model's reply under the HUMAN's history key
     historyService.pushAssistant(historyUserId, finalResponse);
@@ -333,7 +336,118 @@ export async function onLocalMessage(message, localClient, remoteClient) {
   }
 }
 
-// ── Remote routing logic ──────────────────────────────────────────────────────
+// ── Local direct message handler ─────────────────────────────────────────────
+
+/**
+ * Called when a human user replies directly to a vale (local bot) message.
+ * Loads shared history keyed by the human's user ID and runs the local model.
+ *
+ * @param {import("discord.js").Message} message
+ * @param {import("discord.js").Client} localClient
+ */
+export async function onLocalDirectMessage(message, localClient) {
+  // Channel allowlist
+  if (
+    config.discord.allowedChannelIds.length > 0 &&
+    !config.discord.allowedChannelIds.includes(message.channelId)
+  ) {
+    return;
+  }
+
+  // Rate limit
+  if (!rateLimiter.check(message.author.id)) {
+    const retryAfterSec = rateLimitRetrySec(message.author.id);
+    await message.reply(`⏳ Too fast — wait ${retryAfterSec}s`).catch(() => {});
+    return;
+  }
+
+  const reqId = randomUUID().slice(0, 8);
+  const historyUserId = message.author.id;
+
+  const userText = message.content.replace(/<@!?\d+>/g, "").trim();
+  if (!userText) return;
+
+  logger.info(
+    `[${reqId}] [local-direct] [${message.author.tag}] in #${message.channel.name ?? message.channelId}: ${userText.slice(0, 80)}`
+  );
+
+  await message.channel.sendTyping();
+  const typingInterval = setInterval(
+    () => message.channel.sendTyping().catch(() => {}),
+    8_000
+  );
+
+  await semaphore.acquire();
+  setLocalPresenceOnline();
+
+  try {
+    await ensureLocalModel();
+
+    historyService.pushUser(historyUserId, userText);
+    const messages = historyService.getMessages(historyUserId, config.llm.systemPromptLocal);
+
+    const done = logger.timer(`[${reqId}] local-direct full response`, "info");
+    logger.debug(
+      `[${reqId}] [local-direct] messages: ${messages.length} (${Math.floor((messages.length - 1) / 2)} user/assistant pairs)`
+    );
+
+    const rawResponse = stripThinkBlock(
+      await llamaChat(config.llama.localUrl, messages, modelOpts("local"))
+    );
+
+    const searchMatch = SEARCH_SIGNAL_RE.exec(rawResponse.trim());
+    let finalResponse;
+    if (searchMatch) {
+      if (config.search.enabled === "off") {
+        logger.warn(`[${reqId}] [local-direct] __SEARCH__ signal dropped — SEARCH=off`);
+        finalResponse = await retryWithoutSearch(reqId, message, messages, config.llama.localUrl, modelOpts("local"));
+      } else if (config.search.mode === "command") {
+        logger.warn(`[${reqId}] [local-direct] __SEARCH__ auto-signal dropped — SEARCH_MODE=command`);
+        finalResponse = await retryWithoutSearch(reqId, message, messages, config.llama.localUrl, modelOpts("local"));
+      } else {
+        finalResponse = await handleSearchSignal(reqId, message, messages, rawResponse, config.llama.localUrl, modelOpts("local"));
+      }
+    } else {
+      finalResponse = rawResponse;
+    }
+
+    done();
+    await sendChunked(message, finalResponse);
+    historyService.pushAssistant(historyUserId, finalResponse);
+  } catch (err) {
+    logger.error(`[${reqId}] [local-direct] Error during LLM completion:`, err);
+    historyService.popLastUser(historyUserId);
+    await message.reply("⚠️ Something went wrong. Please try again.").catch(() => {});
+  } finally {
+    semaphore.release();
+    clearInterval(typingInterval);
+    setLocalPresenceCooldown();
+  }
+}
+
+
+
+const VALE_PLACEHOLDER = "__VALE__";
+
+const FALLBACK_HANDOFF_PHRASES = [
+  "mind taking a look",
+  "this one's for you",
+  "pinging",
+  "looping in",
+  "passing this to",
+  "yo — take it from here",
+];
+
+function resolveValeMention(answer, mention) {
+  if (answer.includes(VALE_PLACEHOLDER)) {
+    return answer.replaceAll(VALE_PLACEHOLDER, mention);
+  }
+  // Model didn't include the placeholder — pick a random fallback phrase
+  const phrase = FALLBACK_HANDOFF_PHRASES[
+    Math.floor(Math.random() * FALLBACK_HANDOFF_PHRASES.length)
+  ];
+  return `${answer}\n\n${phrase} ${mention}`;
+}
 
 /**
  * Routes a remote bot request using LLM self-evaluation.
@@ -417,11 +531,12 @@ async function routeRemoteRequest(reqId, message, messages, localClient) {
     }
     logger.info(`[${reqId}] LLM self-routing: escalating to local model (score=${score})`);
     const localMention = `<@${localClient.user.id}>`;
-    // Append the cc mention if the model did not already include it
-    const handoffText = answer.includes(localMention)
-      ? answer
-      : `${answer}\n\ncc ${localMention}`;
+    const handoffText = resolveValeMention(answer, localMention);
     await sendChunked(message, handoffText);
+    // Push a placeholder assistant entry so history stays properly alternating.
+    // Without this, the next message sees two consecutive user turns and
+    // escalates again (double-escalation bug).
+    historyService.pushAssistant(message.author.id, "(escalated to vale)");
     // Return null to signal the caller that history ownership passes to the
     // local bot — onRemoteMessage must NOT call historyService.pushAssistant.
     return null;
