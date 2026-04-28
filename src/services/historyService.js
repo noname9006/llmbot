@@ -4,6 +4,36 @@ import { logger } from "../logger.js";
 // Histories inactive for longer than this are evicted by cleanup()
 const HISTORY_TTL_MS = 24 * 60 * 60_000; // 24 hours
 
+/** Rough token estimator: 1 token ≈ 4 chars */
+function estimateTokens(messages) {
+  return messages.reduce((sum, m) => sum + Math.ceil(m.content.length / 4), 0);
+}
+
+/**
+ * Drops the oldest user+assistant pairs until the estimated token count
+ * fits within budget. Always keeps: system prompt + last user message.
+ * Logs a warning when turns are dropped.
+ * @param {Array<{role,content}>} messages  - first element must be system message
+ * @param {number} budget
+ * @returns {Array<{role,content}>}
+ */
+function trimToTokenBudget(messages, budget) {
+  const [system, ...turns] = messages;
+  const before = estimateTokens(messages);
+  let dropped = 0;
+  while (turns.length > 1 && estimateTokens([system, ...turns]) > budget) {
+    const removeCount = turns[1]?.role === "assistant" ? 2 : 1;
+    turns.splice(0, removeCount);
+    dropped += removeCount;
+  }
+  if (dropped > 0) {
+    logger.warn(
+      `[historyService] trimToTokenBudget: dropped ${dropped} turn(s) — was ~${before} tokens, budget ${budget}`
+    );
+  }
+  return [system, ...turns];
+}
+
 /**
  * Manages per-user conversation history.
  * Each entry: { role: "user" | "assistant", content: string }
@@ -17,18 +47,22 @@ class HistoryService {
 
   /**
    * Returns the full message array for a user, including the system prompt
-   * prepended as the first message.
+   * prepended as the first message. If maxInputTokens > 0, trims the oldest
+   * history pairs to fit within the token budget.
    * @param {string} userId
    * @param {string} [systemPrompt]
+   * @param {number} [maxInputTokens]  0 = no limit
    * @returns {Array<{role: string, content: string}>}
    */
-  getMessages(userId, systemPrompt = config.llm.systemPrompt) {
+  getMessages(userId, systemPrompt = config.llm.systemPrompt, maxInputTokens = 0) {
     this.#touch(userId);
     const history = this.#store.get(userId) ?? [];
-    return [
+    const messages = [
       { role: "system", content: systemPrompt },
       ...history,
     ];
+    if (maxInputTokens <= 0) return messages;
+    return trimToTokenBudget(messages, maxInputTokens);
   }
 
   /**

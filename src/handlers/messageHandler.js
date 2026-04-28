@@ -170,7 +170,11 @@ export async function onRemoteMessage(message, remoteClient, localClient) {
   try {
     // ── Build message history (inside semaphore to avoid dirty-history races) ─
     historyService.pushUser(message.author.id, userText);
-    const messages = historyService.getMessages(message.author.id, config.llm.systemPromptRemote);
+    const messages = historyService.getMessages(
+      message.author.id,
+      config.llm.systemPromptRemote,
+      config.history.maxInputTokensRemote
+    );
 
     // ── Inject ephemeral capitalization reminder ──────────────────────────────
     const capReminder = buildCapReminder(userText);
@@ -290,14 +294,20 @@ export async function onLocalMessage(message, localClient, remoteClient) {
     // Note: we do NOT push a new user message here — the original human message
     // was already stored by the remote bot handler under historyUserId.
     // We retrieve the existing history and run inference on it.
-    const messages = historyService.getMessages(historyUserId, config.llm.systemPromptLocal);
+    const messages = historyService.getMessages(
+      historyUserId,
+      config.llm.systemPromptLocal,
+      config.history.maxInputTokensLocal
+    );
 
     const done = logger.timer(`[${reqId}] local full response`, "info");
     logger.debug(`[${reqId}] local model messages: ${messages.length} (${Math.floor((messages.length - 1) / 2)} user/assistant pairs)`);
 
+    logger.raw("→ local input", messages);
     const rawResponse = stripThinkBlock(
       await llamaChat(config.llama.localUrl, messages, modelOpts("local"))
     );
+    logger.raw("← local output", rawResponse);
 
     // Handle search signal from local model
     const searchMatch = SEARCH_SIGNAL_RE.exec(rawResponse.trim());
@@ -388,16 +398,22 @@ export async function onLocalDirectMessage(message, localClient) {
     await ensureLocalModel();
 
     historyService.pushUser(historyUserId, userText);
-    const messages = historyService.getMessages(historyUserId, config.llm.systemPromptLocal);
+    const messages = historyService.getMessages(
+      historyUserId,
+      config.llm.systemPromptLocal,
+      config.history.maxInputTokensLocal
+    );
 
     const done = logger.timer(`[${reqId}] local-direct full response`, "info");
     logger.debug(
       `[${reqId}] [local-direct] messages: ${messages.length} (${Math.floor((messages.length - 1) / 2)} user/assistant pairs)`
     );
 
+    logger.raw("→ local direct input", messages);
     const rawResponse = stripThinkBlock(
       await llamaChat(config.llama.localUrl, messages, modelOpts("local"))
     );
+    logger.raw("← local direct output", rawResponse);
 
     const searchMatch = SEARCH_SIGNAL_RE.exec(rawResponse.trim());
     let finalResponse;
@@ -490,9 +506,11 @@ async function routeRemoteRequest(reqId, message, messages, localClient) {
   logger.info(`[${reqId}] Using remote model`);
   logger.debug(`[${reqId}] messages for LLM: ${messages.length} (${Math.floor((messages.length - 1) / 2)} user/assistant pairs)`);
 
+  logger.raw("→ remote input", messagesForModel);
   const rawResponse = stripThinkBlock(
     await llamaChat(config.llama.remoteUrl, messagesForModel, modelOpts("remote"))
   );
+  logger.raw("← remote output", rawResponse);
 
   // Parse the answer + JSON routing block when the local bot is available
   const { answer, shouldEscalate, score } = localAvailable
@@ -582,6 +600,9 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
   logger.debug(`[${reqId}] handleSearchSignal: query="${query}" url=${baseUrl}`);
   logger.info(`[${reqId}] Search signal detected: "${query}" (url: ${baseUrl})`);
 
+  // Determine role label for raw logging
+  const role = baseUrl === config.llama.remoteUrl ? "remote" : "local";
+
   // 1. Generate a "I'm searching for X" message using the same endpoint
   const searchAckMessages = [
     ...messages,
@@ -595,7 +616,10 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
     },
   ];
 
-  const searchAck = stripThinkBlock(await llamaChat(baseUrl, searchAckMessages, opts));
+  logger.raw(`→ ${role} search-ack input`, searchAckMessages);
+  const rawSearchAck = stripThinkBlock(await llamaChat(baseUrl, searchAckMessages, opts));
+  logger.raw(`← ${role} search-ack output`, rawSearchAck);
+  const searchAck = rawSearchAck.trim() || `🔍 Looking up "${query}"…`;
   await sendChunked(message, searchAck);
 
   // 2. Run the SearXNG query
@@ -619,7 +643,9 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
     },
   ];
 
+  logger.raw(`→ ${role} search-result input`, messagesWithResults);
   const finalResponse = stripThinkBlock(await llamaChat(baseUrl, messagesWithResults, opts));
+  logger.raw(`← ${role} search-result output`, finalResponse);
 
   // Guard against the model returning another search signal — prevents the
   // raw __SEARCH__: string from leaking to the user as its final reply.
@@ -677,7 +703,8 @@ export async function handleForcedSearch(message, query) {
     // Get the current history for this user (no new user message pushed)
     const messages = historyService.getMessages(
       message.author.id,
-      config.llm.systemPromptRemote
+      config.llm.systemPromptRemote,
+      config.history.maxInputTokensRemote
     );
 
     // Post acknowledgement
@@ -691,7 +718,10 @@ export async function handleForcedSearch(message, query) {
           "Match their capitalization style. Do not mention 'model' or 'AI'.",
       },
     ];
-    const searchAck = stripThinkBlock(await llamaChat(baseUrl, searchAckMessages, llmOpts));
+    logger.raw("→ forced-search ack input", searchAckMessages);
+    const rawSearchAck = stripThinkBlock(await llamaChat(baseUrl, searchAckMessages, llmOpts));
+    logger.raw("← forced-search ack output", rawSearchAck);
+    const searchAck = rawSearchAck.trim() || `🔍 Looking up "${safeQuery}"…`;
     await sendChunked(message, searchAck);
 
     // Run search
@@ -715,7 +745,9 @@ export async function handleForcedSearch(message, query) {
       },
     ];
 
+    logger.raw("→ forced-search result input", messagesWithResults);
     const finalResponse = stripThinkBlock(await llamaChat(baseUrl, messagesWithResults, llmOpts));
+    logger.raw("← forced-search result output", finalResponse);
     await sendChunked(message, finalResponse);
 
     // Persist to history
@@ -747,7 +779,9 @@ async function retryWithoutSearch(reqId, message, messages, baseUrl, opts = {}) 
       content: "Please answer directly without searching. Use only what you already know.",
     },
   ];
+  logger.raw("→ retry-without-search input", retryMessages);
   const retryResponse = stripThinkBlock(await llamaChat(baseUrl, retryMessages, opts));
+  logger.raw("← retry-without-search output", retryResponse);
   await sendChunked(message, retryResponse);
   return retryResponse;
 }
