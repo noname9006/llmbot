@@ -64,7 +64,7 @@ The bot loads a separate system prompt file for each model role:
 
 | File | Role |
 |------|------|
-| `sysprompt_vps.txt` | VPS model system prompt |
+| `sysprompt_remote.txt` | Remote model system prompt |
 | `sysprompt.txt` / `sysprompt_common.txt` | Common model system prompt |
 | `sysprompt_heavy.txt` | Heavy model system prompt |
 
@@ -169,7 +169,7 @@ When using the **Windows local agent**, per-model extra args can also be set in 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LLAMA_EXTRA_ARGS` | *(empty)* | Global fallback extra args for llama-server |
-| `LLAMA_EXTRA_ARGS_VPS` | *(falls back to `LLAMA_EXTRA_ARGS`)* | Extra args for the VPS model |
+| `LLAMA_EXTRA_ARGS_REMOTE` | *(falls back to `LLAMA_EXTRA_ARGS`)* | Extra args for the remote model |
 | `LLAMA_EXTRA_ARGS_COMMON` | *(falls back to `LLAMA_EXTRA_ARGS`)* | Extra args for the common model |
 | `LLAMA_EXTRA_ARGS_HEAVY` | *(falls back to `LLAMA_EXTRA_ARGS`)* | Extra args for the heavy model |
 
@@ -180,7 +180,7 @@ Passed to llama-server as the context window size. `0` means use the model defau
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LLAMA_CONTEXT_SIZE` | `0` | Global fallback context size |
-| `LLAMA_CONTEXT_SIZE_VPS` | *(falls back to `LLAMA_CONTEXT_SIZE`)* | Context size for the VPS model |
+| `LLAMA_CONTEXT_SIZE_REMOTE` | *(falls back to `LLAMA_CONTEXT_SIZE`)* | Context size for the remote model |
 | `LLAMA_CONTEXT_SIZE_COMMON` | *(falls back to `LLAMA_CONTEXT_SIZE`)* | Context size for the common model |
 | `LLAMA_CONTEXT_SIZE_HEAVY` | *(falls back to `LLAMA_CONTEXT_SIZE`)* | Context size for the heavy model |
 
@@ -191,30 +191,30 @@ Maximum time to wait for a single `/chat/completions` response before giving up.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LLM_FETCH_TIMEOUT_MS` | `120000` | Global fallback fetch timeout in ms (`0` = no timeout) |
-| `LLM_FETCH_TIMEOUT_MS_VPS` | *(falls back to `LLM_FETCH_TIMEOUT_MS`)* | Fetch timeout for VPS requests |
+| `LLM_FETCH_TIMEOUT_MS_REMOTE` | *(falls back to `LLM_FETCH_TIMEOUT_MS`)* | Fetch timeout for remote model requests |
 | `LLM_FETCH_TIMEOUT_MS_COMMON` | *(falls back to `LLM_FETCH_TIMEOUT_MS`)* | Fetch timeout for common model requests |
 | `LLM_FETCH_TIMEOUT_MS_HEAVY` | *(falls back to `LLM_FETCH_TIMEOUT_MS`)* | Fetch timeout for heavy model requests |
 
 ### Inference parameters (global + per-model)
 
-Each global parameter has per-model overrides (`_VPS`, `_COMMON`, `_HEAVY`). Per-model values fall back to the global value when not set.
+Each global parameter has per-model overrides (`_REMOTE`, `_COMMON`, `_HEAVY`). Per-model values fall back to the global value when not set.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `LLM_TEMPERATURE` | `0.8` | Sampling temperature. Gemma 4 recommended: `1.0` |
-| `LLM_TEMPERATURE_COMMON` / `_HEAVY` / `_VPS` | *(falls back to `LLM_TEMPERATURE`)* | Per-model temperature override |
+| `LLM_TEMPERATURE_COMMON` / `_HEAVY` / `_REMOTE` | *(falls back to `LLM_TEMPERATURE`)* | Per-model temperature override |
 | `LLM_TOP_P` | `0.95` | Top-p (nucleus) sampling. Gemma 4 recommended: `0.95` |
-| `LLM_TOP_P_COMMON` / `_HEAVY` / `_VPS` | *(falls back to `LLM_TOP_P`)* | Per-model top-p override |
+| `LLM_TOP_P_COMMON` / `_HEAVY` / `_REMOTE` | *(falls back to `LLM_TOP_P`)* | Per-model top-p override |
 | `LLM_TOP_K` | `40` | Top-k sampling. Gemma 4 recommended: `64` |
-| `LLM_TOP_K_COMMON` / `_HEAVY` / `_VPS` | *(falls back to `LLM_TOP_K`)* | Per-model top-k override |
+| `LLM_TOP_K_COMMON` / `_HEAVY` / `_REMOTE` | *(falls back to `LLM_TOP_K`)* | Per-model top-k override |
 | `LLM_MIN_P` | `0.0` | Min-p sampling threshold |
-| `LLM_MIN_P_COMMON` / `_HEAVY` / `_VPS` | *(falls back to `LLM_MIN_P`)* | Per-model min-p override |
+| `LLM_MIN_P_COMMON` / `_HEAVY` / `_REMOTE` | *(falls back to `LLM_MIN_P`)* | Per-model min-p override |
 | `LLM_REPEAT_PENALTY` | `1.1` | Repetition penalty. Gemma 4 recommended: `1.0` (disabled). Old name `LLM_REPETITION_PENALTY` still accepted. |
-| `LLM_REPEAT_PENALTY_COMMON` / `_HEAVY` / `_VPS` | *(falls back to `LLM_REPEAT_PENALTY`)* | Per-model repetition penalty override |
+| `LLM_REPEAT_PENALTY_COMMON` / `_HEAVY` / `_REMOTE` | *(falls back to `LLM_REPEAT_PENALTY`)* | Per-model repetition penalty override |
 | `LLM_MAX_TOKENS` | `2048` | Max tokens per response (`-1` = unlimited) |
-| `LLM_MAX_TOKENS_COMMON` / `_HEAVY` / `_VPS` | *(falls back to `LLM_MAX_TOKENS`)* | Per-model max tokens override |
+| `LLM_MAX_TOKENS_COMMON` / `_HEAVY` / `_REMOTE` | *(falls back to `LLM_MAX_TOKENS`)* | Per-model max tokens override |
 | `LLM_REASONING_BUDGET` | `-1` (disabled) | Max reasoning/thinking tokens (`budget_tokens`). `-1` = not sent (model default). `0` = disable reasoning. Positive = token cap. |
-| `LLM_REASONING_BUDGET_COMMON` / `_HEAVY` / `_VPS` | *(falls back to `LLM_REASONING_BUDGET`)* | Per-model reasoning budget override |
+| `LLM_REASONING_BUDGET_COMMON` / `_HEAVY` / `_REMOTE` | *(falls back to `LLM_REASONING_BUDGET`)* | Per-model reasoning budget override |
 
 ### History
 

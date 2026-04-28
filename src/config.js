@@ -233,7 +233,9 @@ export const config = {
 
     // ── Per-model llama.cpp extra args (passed to agent /start) ──────────────
     // Falls back to LLAMA_EXTRA_ARGS if the role-specific var is not set.
-    extraArgsRemote: optional("LLAMA_EXTRA_ARGS_VPS",   _extraArgsFallback),
+    extraArgsRemote: optional("LLAMA_EXTRA_ARGS_REMOTE",
+      optional("LLAMA_EXTRA_ARGS_VPS", _extraArgsFallback)
+    ),
     extraArgsLocal:  optional("LLAMA_EXTRA_ARGS_LOCAL",
       // Backward compat: fall back to the old COMMON var
       optional("LLAMA_EXTRA_ARGS_COMMON", _extraArgsFallback)
@@ -241,7 +243,9 @@ export const config = {
 
     // ── Per-model context size (passed to agent /start) ───────────────────────
     // Falls back to LLAMA_CONTEXT_SIZE if the role-specific var is not set.
-    contextSizeRemote: parseInt(optional("LLAMA_CONTEXT_SIZE_VPS",   _ctxFallback), 10) || 0,
+    contextSizeRemote: parseInt(optional("LLAMA_CONTEXT_SIZE_REMOTE",
+      optional("LLAMA_CONTEXT_SIZE_VPS", _ctxFallback)
+    ), 10) || 0,
     contextSizeLocal:  parseInt(
       optional("LLAMA_CONTEXT_SIZE_LOCAL",
         // Backward compat: fall back to the old COMMON var
@@ -252,7 +256,9 @@ export const config = {
 
     // ── Per-model fetch timeouts ───────────────────────────────────────────────
     // Falls back to LLM_FETCH_TIMEOUT_MS if the role-specific var is not set.
-    fetchTimeoutRemote: parseInt(optional("LLM_FETCH_TIMEOUT_MS_VPS",   String(_timeoutFallback)), 10),
+    fetchTimeoutRemote: parseInt(optional("LLM_FETCH_TIMEOUT_MS_REMOTE",
+      optional("LLM_FETCH_TIMEOUT_MS_VPS", String(_timeoutFallback))
+    ), 10),
     fetchTimeoutLocal:  parseInt(
       optional("LLM_FETCH_TIMEOUT_MS_LOCAL",
         // Backward compat: fall back to the old COMMON var
