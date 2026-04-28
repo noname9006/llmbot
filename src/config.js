@@ -182,7 +182,10 @@ const _discordTokenRemote = (() => {
     process.env._DISCORD_TOKEN_DEPRECATED = "1";
     return process.env.DISCORD_TOKEN;
   }
-  throw new Error("Missing required environment variable: DISCORD_TOKEN_REMOTE (or legacy DISCORD_TOKEN)");
+  throw new Error(
+    "Missing required environment variable: DISCORD_TOKEN_REMOTE " +
+    "(set DISCORD_TOKEN_REMOTE for the remote bot; legacy DISCORD_TOKEN is also accepted but deprecated)"
+  );
 })();
 
 export const config = {

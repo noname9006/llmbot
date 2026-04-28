@@ -737,7 +737,8 @@ function splitMessage(text, limit = STREAM_CHUNK_LIMIT) {
       splitAt = limit;
     }
 
-    chunks.push(remaining.slice(0, splitAt).trimEnd());
+    const chunk = remaining.slice(0, splitAt).trimEnd();
+    if (chunk) chunks.push(chunk);
     remaining = remaining.slice(splitAt).trimStart();
   }
 

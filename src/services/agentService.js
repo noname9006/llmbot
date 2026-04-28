@@ -153,7 +153,7 @@ export async function ensureLocalModel() {
  */
 export function resetLocalIdleTimer() {
   const idleMs = config.localPresence.idleMs;
-  if (!idleMs || idleMs <= 0) return; // 0 = no auto-stop
+  if (idleMs <= 0) return; // 0 = no auto-stop (default)
 
   clearLocalIdleTimer();
   localIdleTimer = setTimeout(() => {
