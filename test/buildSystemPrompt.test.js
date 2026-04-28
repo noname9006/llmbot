@@ -147,9 +147,16 @@ describe("buildSystemPrompt()", () => {
 // without importing the full messageHandler module (which has side-effects).
 
 const SIGNAL_STRIP_RE = /__SEARCH__:[^\n]*/g;
+const ESCALATION_JSON_STRIP_RE = /\{[^{}]*"should_escalate"[^{}]*\}/g;
+const VALE_TOKEN_STRIP_RE = /__VALE__[^\n]*/g;
 
 function stripSignals(text) {
-  return text.replace(SIGNAL_STRIP_RE, "").replace(/\n{3,}/g, "\n\n").trim();
+  return text
+    .replace(SIGNAL_STRIP_RE, "")
+    .replace(ESCALATION_JSON_STRIP_RE, "")
+    .replace(VALE_TOKEN_STRIP_RE, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 describe("stripSignals()", () => {
@@ -180,5 +187,29 @@ describe("stripSignals()", () => {
 
   test("returns empty string for a response that is only a search signal", () => {
     assert.equal(stripSignals("__SEARCH__: some query"), "");
+  });
+
+  test("strips leaked escalation JSON block", () => {
+    const input = `Good answer.\n{"score":3,"should_escalate":true,"reason":"complex"}`;
+    const result = stripSignals(input);
+    assert.ok(!result.includes('"should_escalate"'), "escalation JSON should be gone");
+    assert.ok(result.includes("Good answer."));
+  });
+
+  test("strips bare __VALE__ token and trailing text", () => {
+    const input = `Some answer __VALE__ might wanna weigh in`;
+    const result = stripSignals(input);
+    assert.ok(!result.includes("__VALE__"), "__VALE__ token should be gone");
+    assert.ok(result.includes("Some answer"), "prose before __VALE__ should be kept");
+  });
+
+  test("strips both escalation JSON and __VALE__ from a combined leak", () => {
+    const input =
+      `Elaborate on what part 🤔\n` +
+      `{"score":3,"should_escalate":true,"reason":"clarification needed"}__VALE__ might wanna weigh in`;
+    const result = stripSignals(input);
+    assert.ok(!result.includes('"should_escalate"'), "JSON stripped");
+    assert.ok(!result.includes("__VALE__"), "__VALE__ stripped");
+    assert.ok(result.includes("Elaborate on what part"));
   });
 });

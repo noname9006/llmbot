@@ -22,14 +22,19 @@ export function parseEscalationBlock(rawText) {
   }
 
   const potentialJson = trimmed.slice(jsonStart);
+  // Strip any trailing text after the last `}` — the model sometimes leaks
+  // tokens (e.g. "__VALE__ might wanna weigh in") after the JSON block, which
+  // causes the naive endsWith("}") check to fail.
+  const lastBrace = potentialJson.lastIndexOf("}");
+  const jsonCandidate = lastBrace !== -1 ? potentialJson.slice(0, lastBrace + 1) : potentialJson;
   // Must close with `}` — multi-line or truncated blocks are rejected
-  if (!potentialJson.endsWith("}")) {
+  if (!jsonCandidate.endsWith("}")) {
     return { answer: trimmed.trim(), shouldEscalate: false, score: null };
   }
 
   let parsed;
   try {
-    parsed = JSON.parse(potentialJson);
+    parsed = JSON.parse(jsonCandidate);
   } catch {
     return { answer: trimmed.trim(), shouldEscalate: false, score: null };
   }
@@ -70,9 +75,9 @@ export function buildEscalationInstruction() {
     `4-5=deep code/math/multi-step reasoning/ambiguity.\n` +
     `Set should_escalate=true when score>=4 or you are uncertain and more depth ` +
     `would genuinely help the user.\n` +
-    `Do not change your style or content. Output the JSON block at the very end; ` +
-    `no extra text after it.\n\n` +
-    `When should_escalate is true, you MUST end your answer with a short, natural phrase that tags vale using the exact token __VALE__ (it will be substituted). Vary it each time. Examples (pick freely, do not copy verbatim):\n` +
+    `Do not change your style or content. The JSON block must be the absolute last ` +
+    `thing in your response — no text of any kind after it.\n\n` +
+    `When should_escalate is true, you MUST include a short, natural phrase that tags vale using the exact token __VALE__ (it will be substituted) somewhere in your prose answer — before the JSON block. Vary it each time. Examples (pick freely, do not copy verbatim):\n` +
     `"mind taking a look __VALE__"\n` +
     `"this one's for you __VALE__"\n` +
     `"pinging __VALE__ on this 👀"\n` +
@@ -80,6 +85,6 @@ export function buildEscalationInstruction() {
     `"__VALE__ might wanna weigh in"\n` +
     `"looping in __VALE__"\n` +
     `"passing this one to __VALE__"\n` +
-    `Do NOT use "cc __VALE__". Include __VALE__ exactly once. Place it at the very end of your answer, after any other content.`
+    `Do NOT use "cc __VALE__". Include __VALE__ exactly once in your prose answer, before the JSON block.`
   );
 }

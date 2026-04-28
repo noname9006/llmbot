@@ -50,6 +50,10 @@ const SEARCH_SIGNAL_RE = /^__SEARCH__:\s*([^\n]+)/;
 // Regex used to strip leaked signal tokens from model output before sending
 // to Discord.  Matches __SEARCH__: <rest of line>.
 const SIGNAL_STRIP_RE = /__SEARCH__:[^\n]*/g;
+// Matches leaked escalation routing JSON blocks: {"score":...,"should_escalate":...}
+const ESCALATION_JSON_STRIP_RE = /\{[^{}]*"should_escalate"[^{}]*\}/g;
+// Matches bare __VALE__ token and any trailing text on the same line.
+const VALE_TOKEN_STRIP_RE = /__VALE__[^\n]*/g;
 
 // User-facing fallback messages for unexpected model signal outputs.
 const MSG_SEARCH_EMPTY_QUERY =
@@ -606,7 +610,13 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
   // 3. Inject search results and re-run the model
   const messagesWithResults = [
     ...messages,
-    { role: "user", content: searchResults },
+    {
+      role: "user",
+      content:
+        `Here are search results for "${query}":\n\n${searchResults}\n\n` +
+        `Based on these results, give a clear and useful summary. ` +
+        `Stay in character. Focus on what's most relevant to the user's original question.`,
+    },
   ];
 
   const finalResponse = stripThinkBlock(await llamaChat(baseUrl, messagesWithResults, opts));
@@ -696,8 +706,13 @@ export async function handleForcedSearch(message, query) {
     // Re-run model with results
     const messagesWithResults = [
       ...messages,
-      { role: "user", content: `!search ${safeQuery}` },
-      { role: "user", content: searchResults },
+      {
+        role: "user",
+        content:
+          `Here are search results for "${safeQuery}":\n\n${searchResults}\n\n` +
+          `Based on these results, give a clear and useful summary. ` +
+          `Stay in character. Focus on what's most relevant to the user's original question.`,
+      },
     ];
 
     const finalResponse = stripThinkBlock(await llamaChat(baseUrl, messagesWithResults, llmOpts));
@@ -753,7 +768,12 @@ export function getSemaphoreStats() {
  * @returns {string}
  */
 function stripSignals(text) {
-  return text.replace(SIGNAL_STRIP_RE, "").replace(/\n{3,}/g, "\n\n").trim();
+  return text
+    .replace(SIGNAL_STRIP_RE, "")
+    .replace(ESCALATION_JSON_STRIP_RE, "")
+    .replace(VALE_TOKEN_STRIP_RE, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 /**
