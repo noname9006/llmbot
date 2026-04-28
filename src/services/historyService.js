@@ -4,7 +4,12 @@ import { logger } from "../logger.js";
 // Histories inactive for longer than this are evicted by cleanup()
 const HISTORY_TTL_MS = 24 * 60 * 60_000; // 24 hours
 
-/** Rough token estimator: 1 token ≈ 4 chars */
+/**
+ * Rough token estimator: 1 token ≈ 4 chars.
+ * This is a simple approximation and may differ from actual tokenization,
+ * especially for non-English text or content with many special characters.
+ * It is intentionally conservative — good enough for throttling purposes.
+ */
 function estimateTokens(messages) {
   return messages.reduce((sum, m) => sum + Math.ceil(m.content.length / 4), 0);
 }
@@ -22,6 +27,9 @@ function trimToTokenBudget(messages, budget) {
   const before = estimateTokens(messages);
   let dropped = 0;
   while (turns.length > 1 && estimateTokens([system, ...turns]) > budget) {
+    // Remove the oldest user+assistant pair (2 messages) when turns[1] is an
+    // assistant reply, confirming a complete pair. Otherwise remove only the
+    // lone leading user message.
     const removeCount = turns[1]?.role === "assistant" ? 2 : 1;
     turns.splice(0, removeCount);
     dropped += removeCount;
