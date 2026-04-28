@@ -5,7 +5,6 @@ import {
   setLocalPresenceIdle,
   setLocalPresenceDnd,
 } from "./localPresenceService.js";
-import { warmupLocalModel } from "./vpsLlamaProcess.js";
 
 // ── Agent availability ────────────────────────────────────────────────────────
 
@@ -58,10 +57,6 @@ async function pollAgent() {
       resetActiveModelOnReconnect();
       // Update local bot presence to Idle (model is ready but not processing)
       setLocalPresenceIdle();
-      // Warm up the local model to minimize first-response latency
-      warmupLocalModel().catch((err) =>
-        logger.warn(`Local model warmup failed (non-fatal): ${err.message}`)
-      );
     } else {
       agentOfflineSince = Date.now();
       agentOnlineSince = null;

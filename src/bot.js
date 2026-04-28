@@ -10,7 +10,6 @@ import { onRemoteMessage, onLocalMessage, getSemaphoreStats } from "./handlers/m
 import { startPolling, isLocalAvailable, isVpsAvailable } from "./services/localAvailabilityService.js";
 import { getActiveLocalModel } from "./services/agentService.js";
 import { setLocalClient, setLocalPresenceIdle, setLocalPresenceDnd } from "./services/localPresenceService.js";
-import { warmupLocalModel } from "./services/vpsLlamaProcess.js";
 
 // ── Shared client options ─────────────────────────────────────────────────────
 
@@ -85,10 +84,6 @@ if (config.discord.tokenLocal) {
     // may already reflect the true state.
     if (isLocalAvailable()) {
       setLocalPresenceIdle();
-      // Warm up the local model now that we have a client handle
-      warmupLocalModel().catch((err) =>
-        logger.warn(`Local model warmup (bot ready) failed (non-fatal): ${err.message}`)
-      );
     } else {
       setLocalPresenceDnd();
     }
@@ -101,8 +96,10 @@ if (config.discord.tokenLocal) {
     // Guard: only process messages authored by a bot that mention this client
     if (!message.author.bot) return;
     if (!localClient.user || !message.mentions.has(localClient.user.id)) return;
-    // Only accept handoffs from the remote bot specifically
-    if (remoteClient.user && message.author.id !== remoteClient.user.id) return;
+    // Only accept handoffs from the remote bot specifically.
+    // Reject if remoteClient is not ready yet — its user ID is unknown, so
+    // any bot message could slip through the guard.
+    if (!remoteClient.user || message.author.id !== remoteClient.user.id) return;
 
     onLocalMessage(message, localClient, remoteClient).catch((err) => {
       logger.error("Unhandled error in local messageCreate:", err);

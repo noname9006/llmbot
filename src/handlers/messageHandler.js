@@ -8,7 +8,7 @@ import { ensureLocalModel } from "../services/agentService.js";
 import { search } from "../services/searchService.js";
 import { isCommand, handleCommand } from "./commandHandler.js";
 import { createRateLimiter, createSemaphore } from "../utils/rateLimiter.js";
-import { isComplexRequest } from "../utils/complexityDetector.js";
+import { parseEscalationBlock, buildEscalationInstruction } from "../utils/escalationParser.js";
 import {
   setLocalPresenceOnline,
   setLocalPresenceCooldown,
@@ -179,13 +179,16 @@ export async function onRemoteMessage(message, remoteClient, localClient) {
       reqId,
       message,
       messagesWithReminder,
-      userText,
       localClient
     );
     done();
 
-    // Persist the assistant's reply to history (the final user-facing response)
-    historyService.pushAssistant(message.author.id, fullResponse);
+    // Persist to history only when the remote model answered directly.
+    // null is returned on the handoff path — the local bot owns that exchange
+    // and will push its own assistant turn under the same historyUserId.
+    if (fullResponse !== null) {
+      historyService.pushAssistant(message.author.id, fullResponse);
+    }
   } catch (err) {
     logger.error(`[${reqId}] Error during LLM completion:`, err);
 
@@ -323,100 +326,87 @@ export async function onLocalMessage(message, localClient, remoteClient) {
 // ── Remote routing logic ──────────────────────────────────────────────────────
 
 /**
- * Routes a remote bot request based on complexity.
+ * Routes a remote bot request using LLM self-evaluation.
  *
- * Simple → answer directly via remote model.
- * Complex + local available → remote posts brief starter answer + tags local bot.
- * Complex + local unavailable → remote answers fully (graceful fallback).
+ * The remote model always answers first.  When the local bot is available,
+ * an escalation instruction is injected into the message array asking the
+ * model to append a JSON complexity block after its answer.  The block is
+ * parsed to determine whether to escalate:
+ *
+ *   should_escalate=false → return the answer directly (local unavailable → same path)
+ *   should_escalate=true  → post the answer as a draft + tag @LocalBot; return null
+ *                            so the caller skips historyService.pushAssistant and
+ *                            lets onLocalMessage own the history for this exchange.
  *
  * @param {string} reqId
  * @param {import("discord.js").Message} message
  * @param {Array<{role: string, content: string}>} messages
- * @param {string} userText  - original user text
  * @param {import("discord.js").Client | null} localClient
- * @returns {Promise<string>}  the final assistant response shown to the user
+ * @returns {Promise<string|null>}  answer text, or null on the handoff path
  */
-async function routeRemoteRequest(reqId, message, messages, userText, localClient) {
-  const { complex, reasons } = isComplexRequest(userText);
+async function routeRemoteRequest(reqId, message, messages, localClient) {
   const localAvailable = isLocalAvailable() && localClient?.isReady();
 
-  if (!complex || !localAvailable) {
-    // ── Simple request (or local unavailable) → remote model answers directly ─
-    if (complex && !localAvailable) {
-      logger.info(`[${reqId}] Complex request but local bot unavailable — remote answering fully`);
-    } else {
-      logger.debug(`[${reqId}] Simple request — remote model answering directly`);
-    }
+  // Inject escalation instruction only when the local bot can actually handle it
+  const messagesForModel = localAvailable
+    ? [...messages, { role: "user", content: buildEscalationInstruction() }]
+    : messages;
 
-    logger.info(`[${reqId}] Using remote model`);
-    logger.debug(`[${reqId}] messages for LLM: ${messages.length} (${Math.floor((messages.length - 1) / 2)} user/assistant pairs)`);
+  logger.info(`[${reqId}] Using remote model`);
+  logger.debug(`[${reqId}] messages for LLM: ${messages.length} (${Math.floor((messages.length - 1) / 2)} user/assistant pairs)`);
 
-    const response = stripThinkBlock(
-      await llamaChat(config.llama.remoteUrl, messages, modelOpts("remote"))
-    );
+  const rawResponse = stripThinkBlock(
+    await llamaChat(config.llama.remoteUrl, messagesForModel, modelOpts("remote"))
+  );
 
-    const searchMatch = SEARCH_SIGNAL_RE.exec(response.trim());
-    if (searchMatch) {
-      if (config.search.enabled === "off") {
-        logger.warn(`[${reqId}] __SEARCH__ signal dropped — SEARCH=off`);
-        return await retryWithoutSearch(reqId, message, messages, config.llama.remoteUrl, modelOpts("remote"));
-      }
-      if (config.search.mode === "command") {
-        logger.warn(`[${reqId}] __SEARCH__ auto-signal dropped — SEARCH_MODE=command`);
-        return await retryWithoutSearch(reqId, message, messages, config.llama.remoteUrl, modelOpts("remote"));
-      }
-      logger.debug(`[${reqId}] __SEARCH__ detected — mode=auto, searching`);
-      const finalResponse = await handleSearchSignal(
-        reqId, message, messages, response, config.llama.remoteUrl, modelOpts("remote")
-      );
-      await sendChunked(message, finalResponse);
-      return finalResponse;
-    }
+  // Parse the answer + JSON routing block when the local bot is available
+  const { answer, shouldEscalate, score } = localAvailable
+    ? parseEscalationBlock(rawResponse)
+    : { answer: rawResponse, shouldEscalate: false, score: null };
 
-    await sendChunked(message, response);
-    return response;
+  if (localAvailable && score !== null) {
+    logger.debug(`[${reqId}] LLM routing: score=${score} should_escalate=${shouldEscalate}`);
   }
 
-  // ── Complex request + local bot available → handoff ────────────────────────
-  logger.info(
-    `[${reqId}] Complex request — remote will post starter answer and tag local bot ` +
-    `(reasons: ${reasons.join("; ")})`
-  );
+  // Search signal is checked in the clean answer (JSON block already stripped)
+  const searchMatch = SEARCH_SIGNAL_RE.exec(answer.trim());
+  if (searchMatch) {
+    if (config.search.enabled === "off") {
+      logger.warn(`[${reqId}] __SEARCH__ signal dropped — SEARCH=off`);
+      return await retryWithoutSearch(reqId, message, messages, config.llama.remoteUrl, modelOpts("remote"));
+    }
+    if (config.search.mode === "command") {
+      logger.warn(`[${reqId}] __SEARCH__ auto-signal dropped — SEARCH_MODE=command`);
+      return await retryWithoutSearch(reqId, message, messages, config.llama.remoteUrl, modelOpts("remote"));
+    }
+    logger.debug(`[${reqId}] __SEARCH__ detected — mode=auto, searching`);
+    const finalResponse = await handleSearchSignal(
+      reqId, message, messages, answer, config.llama.remoteUrl, modelOpts("remote")
+    );
+    await sendChunked(message, finalResponse);
+    return finalResponse;
+  }
 
-  const localMention = `<@${localClient.user.id}>`;
+  // ── Escalation path: post the draft answer and tag the local bot ──────────
+  if (shouldEscalate) {
+    logger.info(`[${reqId}] LLM self-routing: escalating to local model (score=${score})`);
+    const localMention = `<@${localClient.user.id}>`;
+    // Append the cc mention if the model did not already include it
+    const handoffText = answer.includes(localMention)
+      ? answer
+      : `${answer}\n\ncc ${localMention}`;
+    await sendChunked(message, handoffText);
+    // Return null to signal the caller that history ownership passes to the
+    // local bot — onRemoteMessage must NOT call historyService.pushAssistant.
+    return null;
+  }
 
-  // Ask the remote model to produce:
-  //   1. A brief useful starter answer / opinion
-  //   2. A recommendation to ask the local model
-  //   3. A mention/tag of the local bot
-  const handoffInstruction = {
-    role: "user",
-    content:
-      `This question is complex and will be handled in depth by a specialized local model. ` +
-      `Please do the following in one natural response:\n` +
-      `1. Give a brief, useful starter answer or your initial opinion (1-3 sentences).\n` +
-      `2. Naturally recommend that the user ask the local model for a thorough answer.\n` +
-      `3. End with: "cc ${localMention}" so the local model is notified.\n` +
-      `Do NOT mention "model", "AI", or technical infrastructure. Sound natural.`,
-  };
-
-  const handoffMessages = [...messages, handoffInstruction];
-
-  const handoffResponse = stripThinkBlock(
-    await llamaChat(config.llama.remoteUrl, handoffMessages, modelOpts("remote"))
-  );
-
-  // Ensure the local bot mention is present in the final message so the
-  // local bot's messageCreate listener picks it up.  If the model omitted it,
-  // append it ourselves.
-  const finalHandoff = handoffResponse.includes(localMention)
-    ? handoffResponse
-    : `${handoffResponse}\n\ncc ${localMention}`;
-
-  // Post as a REPLY to the original human message.  This sets message.reference
-  // on the local bot's incoming message, enabling Option B history key resolution.
-  await sendChunked(message, finalHandoff);
-  return finalHandoff;
+  // ── No escalation: remote answer is final ────────────────────────────────
+  if (localAvailable) {
+    logger.debug(`[${reqId}] LLM self-routing: no escalation needed (score=${score ?? "N/A"})`);
+  }
+  await sendChunked(message, answer);
+  return answer;
 }
 
 // ── Search flow ───────────────────────────────────────────────────────────────
