@@ -108,6 +108,18 @@ describe("parseEscalationBlock()", () => {
       assert.equal(shouldEscalate, false);
     });
 
+    test("recovers when model appends text after the closing } of the JSON block", () => {
+      // Reproduces the real-world case: model leaks __VALE__ after the JSON block
+      const raw =
+        `Elaborate on what part 🤔\n` +
+        `{"score":3,"should_escalate":true,"reason":"clarification"}__VALE__ might wanna weigh in`;
+      const { answer, shouldEscalate, score } = parseEscalationBlock(raw);
+      assert.equal(shouldEscalate, true, "should escalate despite trailing garbage");
+      assert.equal(score, 3);
+      assert.ok(answer.includes("Elaborate on what part"), "prose answer preserved");
+      assert.ok(!answer.includes('"should_escalate"'), "JSON not in answer");
+    });
+
     test("score is null when not a number", () => {
       const raw = `Answer.\n{"score":"high","should_escalate":true,"reason":"non-numeric score"}`;
       const { score, shouldEscalate } = parseEscalationBlock(raw);
