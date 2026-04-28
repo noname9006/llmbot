@@ -1,0 +1,5 @@
+REMOTE:
+Intel vCPU 4 threads, 8GB RAM, SSD (OVH VPS server), UBUNTU
+
+LOCAL:
+Ryzen 5 5600X, 32GB RAM, RX 6600XT 8GB VRAM, Windows 10 64 bit
