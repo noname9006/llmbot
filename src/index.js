@@ -1,16 +1,24 @@
 import { config } from "./config.js";
 import { logger } from "./logger.js";
-import { createBot } from "./bot.js";
+import { remoteClient, localClient } from "./bot.js";
 import { getSemaphoreStats } from "./handlers/messageHandler.js";
-import { clearHeavyIdleTimer } from "./services/agentService.js";
-import { startVpsLlamaServer, stopVpsLlamaServer, warmupVpsModel } from "./services/vpsLlamaProcess.js";
+import { clearLocalIdleTimer } from "./services/agentService.js";
+import { startVpsLlamaServer, stopVpsLlamaServer, warmupRemoteModel } from "./services/vpsLlamaProcess.js";
 
-logger.info("Starting discord-llm-bot...");
-logger.info(`VPS llama-server: ${config.llama.vpsUrl} (model: ${config.llama.vpsModelFile})`);
-logger.info(`Local agent: ${config.llama.agentUrl || "(not configured)"}`);
-logger.info(`Local llama-server: ${config.llama.localLlamaUrl || "(not configured)"}`);
-logger.info(`  Common model: ${config.llama.localModelCommonFile || "(not configured)"}`);
-logger.info(`  Heavy model:  ${config.llama.localModelHeavyFile || "(not configured)"}`);
+// Deprecation warning for legacy DISCORD_TOKEN env var
+if (process.env._DISCORD_TOKEN_DEPRECATED === "1") {
+  logger.warn(
+    "DEPRECATED: DISCORD_TOKEN is set but DISCORD_TOKEN_REMOTE is not. " +
+    "Please rename DISCORD_TOKEN to DISCORD_TOKEN_REMOTE in your .env file."
+  );
+}
+
+logger.info("Starting discord-llm-bot (dual-model architecture)…");
+logger.info(`Remote model: ${config.llama.remoteUrl} (model: ${config.llama.remoteModelFile})`);
+logger.info(`Local agent:  ${config.llama.agentUrl  || "(not configured)"}`);
+logger.info(`Local model:  ${config.llama.localUrl  || "(not configured)"}`);
+logger.info(`  Local model file: ${config.llama.localModelFile || "(not configured)"}`);
+logger.info(`Local bot:    ${config.discord.tokenLocal ? "configured" : "disabled (DISCORD_TOKEN_LOCAL not set)"}`);
 
 // ── Effective runtime config summary ─────────────────────────────────────────
 const searchStatus = config.search.enabled === "off"
@@ -18,33 +26,34 @@ const searchStatus = config.search.enabled === "off"
   : `enabled (mode: ${config.search.mode}, cmd: ${config.search.command})`;
 logger.info(`Search: ${searchStatus}`);
 
-const escalateStatus = config.escalate.enabled !== "on"
-  ? "disabled"
-  : `enabled (mode: ${config.escalate.mode}, cmd: ${config.escalate.command}, type: ${config.escalate.type})`;
-logger.info(`Escalation: ${escalateStatus}`);
-
 logger.debug(`Log level: ${config.logLevel}`);
 logger.debug(`Rate limit: ${config.rateLimit.maxRequests} req / ${config.rateLimit.windowMs} ms window, max concurrent: ${config.rateLimit.maxConcurrent}`);
 logger.debug(`History: max ${config.history.maxPairs} pairs`);
+logger.debug(`Complexity: prompt length threshold=${config.complexity.promptLength}`);
 
-const client = createBot();
-
-// Start VPS llama-server before connecting to Discord
+// Start remote llama-server before connecting to Discord
 try {
   await startVpsLlamaServer();
 } catch (err) {
-  logger.error("Failed to start VPS llama-server:", err);
+  logger.error("Failed to start remote llama-server:", err);
   process.exit(1);
 }
 
-// Warm up the model so the first user message isn't delayed by a cold start
-await warmupVpsModel();
+// Warm up the remote model so the first user message isn't delayed by a cold start
+await warmupRemoteModel();
 
-// Login
-client.login(config.discord.token).catch((err) => {
-  logger.error("Failed to log in to Discord:", err);
+// Login — remote bot is required; local bot is optional
+remoteClient.login(config.discord.tokenRemote).catch((err) => {
+  logger.error("Failed to log in remote bot to Discord:", err);
   process.exit(1);
 });
+
+if (localClient) {
+  localClient.login(config.discord.tokenLocal).catch((err) => {
+    logger.error("Failed to log in local bot to Discord:", err);
+    // Non-fatal: app continues without the local bot
+  });
+}
 
 // ── Graceful shutdown ─────────────────────────────────────────────────────────
 let shuttingDown = false;
@@ -56,7 +65,8 @@ async function shutdown(signal) {
   logger.info(`Received ${signal} — stopping new messages and waiting for in-flight requests…`);
 
   // Stop accepting new messages immediately
-  client.removeAllListeners("messageCreate");
+  remoteClient.removeAllListeners("messageCreate");
+  if (localClient) localClient.removeAllListeners("messageCreate");
 
   // Wait up to 30 s for all in-flight LLM calls to complete
   const deadline = Date.now() + 30_000;
@@ -69,14 +79,15 @@ async function shutdown(signal) {
     logger.warn(`Shutdown: ${running} request(s) still in flight after timeout — proceeding anyway`);
   }
 
-  // Cancel the heavy-model idle timer so it cannot fire an agentStop() call
+  // Cancel the local model idle timer so it cannot fire an agentStop() call
   // after the process has started tearing down.
-  clearHeavyIdleTimer();
+  clearLocalIdleTimer();
 
   await stopVpsLlamaServer();
 
   logger.info("Shutdown complete — disconnecting from Discord");
-  client.destroy();
+  remoteClient.destroy();
+  if (localClient) localClient.destroy();
   process.exit(0);
 }
 
@@ -91,3 +102,4 @@ process.on("uncaughtException", (err) => {
 process.on("unhandledRejection", (reason) => {
   logger.error("Unhandled rejection:", reason);
 });
+
