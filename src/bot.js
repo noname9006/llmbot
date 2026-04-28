@@ -6,7 +6,7 @@ import {
 import http from "http";
 import { config } from "./config.js";
 import { logger } from "./logger.js";
-import { onRemoteMessage, onLocalMessage, getSemaphoreStats } from "./handlers/messageHandler.js";
+import { onRemoteMessage, onLocalMessage, onLocalDirectMessage, getSemaphoreStats } from "./handlers/messageHandler.js";
 import { startPolling, isLocalAvailable, isVpsAvailable } from "./services/localAvailabilityService.js";
 import { getActiveLocalModel } from "./services/agentService.js";
 import { setLocalClient, setLocalPresenceIdle, setLocalPresenceDnd } from "./services/localPresenceService.js";
@@ -105,6 +105,24 @@ if (config.discord.tokenLocal) {
     onLocalMessage(message, localClient, remoteClient).catch((err) => {
       logger.error("Unhandled error in local messageCreate:", err);
     });
+  });
+
+  // Handle direct human replies to vale's messages
+  localClient.on("messageCreate", (message) => {
+    if (message.author.bot) return;
+    if (!localClient.user) return;
+    if (!isLocalAvailable()) return;
+    if (!message.reference) return;
+
+    message.channel.messages
+      .fetch(message.reference.messageId)
+      .then((referenced) => {
+        if (referenced.author.id !== localClient.user.id) return;
+        onLocalDirectMessage(message, localClient).catch((err) => {
+          logger.error("Unhandled error in local direct messageCreate:", err);
+        });
+      })
+      .catch(() => {}); // silently ignore fetch failures
   });
 
   localClient.on("error", (err) => {
