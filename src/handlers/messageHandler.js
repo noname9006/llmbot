@@ -137,7 +137,27 @@ export async function onRemoteMessage(message, remoteClient, localClient) {
     .trim();
 
   if (!userText) {
-    await message.reply("Hey! Ask me something 😊");
+    // Generate a natural in-character greeting instead of a hardcoded string
+    const greetReqId = randomUUID().slice(0, 8);
+    logger.debug(`[${greetReqId}] [${message.author.tag}] mentioned bot with no text — generating greeting`);
+    try {
+      const greetMessages = [
+        { role: "system", content: config.llm.systemPromptRemote },
+        {
+          role: "user",
+          content:
+            "Someone just tagged you in chat with no other text. " +
+            "Reply naturally — short and in character. No need to ask what they want.",
+        },
+      ];
+      const rawGreet = stripThinkBlock(
+        await llamaChat(config.llama.remoteUrl, greetMessages, modelOpts("remote"))
+      );
+      await sendChunked(message, rawGreet.trim() || "Sup 👀");
+    } catch (err) {
+      logger.warn(`[${greetReqId}] greeting LLM call failed: ${err.message}`);
+      await message.reply("Sup 👀").catch(() => {});
+    }
     return;
   }
 
@@ -459,10 +479,16 @@ const FALLBACK_HANDOFF_PHRASES = [
 ];
 
 function resolveValeMention(answer, mention) {
+  // First priority: model used the correct __VALE__ placeholder
   if (answer.includes(VALE_PLACEHOLDER)) {
     return answer.replaceAll(VALE_PLACEHOLDER, mention);
   }
-  // Model didn't include the placeholder — pick a random fallback phrase
+  // Second priority: model wrote the literal word "Vale" instead of the token —
+  // replace it so the Discord mention is correctly injected without duplication.
+  if (/\bVale\b/i.test(answer)) {
+    return answer.replace(/\bVale\b/gi, mention);
+  }
+  // Fallback: neither placeholder nor literal name — append a random phrase
   const phrase = FALLBACK_HANDOFF_PHRASES[
     Math.floor(Math.random() * FALLBACK_HANDOFF_PHRASES.length)
   ];
@@ -517,8 +543,11 @@ async function routeRemoteRequest(reqId, message, messages, localClient) {
     ? parseEscalationBlock(rawResponse)
     : { answer: rawResponse, shouldEscalate: false, score: null };
 
-  if (localAvailable && score !== null) {
-    logger.debug(`[${reqId}] LLM routing: score=${score} should_escalate=${shouldEscalate}`);
+  // Always log the routing decision so it's visible regardless of score
+  if (localAvailable) {
+    logger.debug(`[${reqId}] LLM routing: score=${score ?? "N/A"} should_escalate=${shouldEscalate}`);
+  } else {
+    logger.debug(`[${reqId}] LLM routing: skipped — local bot unavailable`);
   }
 
   // Search signal is checked in the clean answer (JSON block already stripped)
@@ -603,23 +632,9 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
   // Determine role label for raw logging
   const role = baseUrl === config.llama.remoteUrl ? "remote" : "local";
 
-  // 1. Generate a "I'm searching for X" message using the same endpoint
-  const searchAckMessages = [
-    ...messages,
-    {
-      role: "user",
-      content:
-        `The user asked something and you decided to search for: "${query}". ` +
-        "Generate a brief, natural message (1 sentence) telling the user you're looking this up. " +
-        "Reference what they asked. Match their capitalization style. " +
-        "Do not mention 'model' or 'AI'.",
-    },
-  ];
-
-  logger.raw(`→ ${role} search-ack input`, searchAckMessages);
-  const rawSearchAck = stripThinkBlock(await llamaChat(baseUrl, searchAckMessages, opts));
-  logger.raw(`← ${role} search-ack output`, rawSearchAck);
-  const searchAck = rawSearchAck.trim() || `🔍 Looking up "${query}"…`;
+  // Post a deterministic ack — an LLM-generated ack is unreliable here because
+  // the model frequently echoes __SEARCH__: back when it sees the signal in context.
+  const searchAck = `🔍 Looking up "${query}"…`;
   await sendChunked(message, searchAck);
 
   // 2. Run the SearXNG query
@@ -638,8 +653,9 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
       role: "user",
       content:
         `Here are search results for "${query}":\n\n${searchResults}\n\n` +
-        `Based on these results, give a clear and useful summary. ` +
-        `Stay in character. Focus on what's most relevant to the user's original question.`,
+        `Based on these results, give a detailed and factual answer. ` +
+        `You may use more sentences than usual — the user needs real information. ` +
+        `Do NOT emit __SEARCH__. Stay in character. Focus on what's most relevant to the user's original question.`,
     },
   ];
 
@@ -708,20 +724,8 @@ export async function handleForcedSearch(message, query) {
     );
 
     // Post acknowledgement
-    const searchAckMessages = [
-      ...messages,
-      {
-        role: "user",
-        content:
-          `The user issued a !search command for: "${safeQuery}". ` +
-          "Generate a brief, natural message (1 sentence) telling the user you're looking this up. " +
-          "Match their capitalization style. Do not mention 'model' or 'AI'.",
-      },
-    ];
-    logger.raw("→ forced-search ack input", searchAckMessages);
-    const rawSearchAck = stripThinkBlock(await llamaChat(baseUrl, searchAckMessages, llmOpts));
-    logger.raw("← forced-search ack output", rawSearchAck);
-    const searchAck = rawSearchAck.trim() || `🔍 Looking up "${safeQuery}"…`;
+    // Deterministic ack — avoids the model echoing __SEARCH__: back
+    const searchAck = `🔍 Looking up "${safeQuery}"…`;
     await sendChunked(message, searchAck);
 
     // Run search
@@ -740,8 +744,9 @@ export async function handleForcedSearch(message, query) {
         role: "user",
         content:
           `Here are search results for "${safeQuery}":\n\n${searchResults}\n\n` +
-          `Based on these results, give a clear and useful summary. ` +
-          `Stay in character. Focus on what's most relevant to the user's original question.`,
+          `Based on these results, give a detailed and factual answer. ` +
+          `You may use more sentences than usual — the user needs real information. ` +
+          `Do NOT emit __SEARCH__. Stay in character. Focus on what's most relevant to the user's original question.`,
       },
     ];
 

@@ -85,6 +85,7 @@ export function buildEscalationInstruction() {
     `"__VALE__ might wanna weigh in"\n` +
     `"looping in __VALE__"\n` +
     `"passing this one to __VALE__"\n` +
+    `Never write the word 'Vale' in your prose answer — always use the exact token __VALE__ as shown in the examples above.\n` +
     `Do NOT use "cc __VALE__". Include __VALE__ exactly once in your prose answer, before the JSON block.`
   );
 }

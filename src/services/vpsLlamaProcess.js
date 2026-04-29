@@ -141,6 +141,14 @@ export async function startVpsLlamaServer() {
       if (res.ok) {
         const body = await res.json().catch(() => null);
         if (body?.status === "ok") {
+          // Brief yield — lets a fast-exiting process emit its "exit" event before we
+          // declare it ready. Without this, a port-conflict failure (exit code 1) can
+          // race against the health poll: the OLD process answers the /health request
+          // while the NEW process has already died, giving a false "ready" result.
+          await new Promise((r) => setTimeout(r, 250));
+          if (vpsProcess !== proc) {
+            throw new Error("[remoteLlama] llama-server exited before becoming ready");
+          }
           logger.info(`[remoteLlama] llama-server ready on port ${port}`);
           return;
         }
