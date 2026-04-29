@@ -320,6 +320,12 @@ export const config = {
   },
   history: {
     maxPairs: parseInt(optional("HISTORY_MAX_PAIRS", "10"), 10),
+    // Max input tokens before history trimming kicks in (0 = disabled).
+    // Separate limits per model — falls back to shared MAX_INPUT_TOKENS.
+    maxInputTokensRemote: parseInt(optional("MAX_INPUT_TOKENS_REMOTE",
+      optional("MAX_INPUT_TOKENS", "0")), 10),
+    maxInputTokensLocal:  parseInt(optional("MAX_INPUT_TOKENS_LOCAL",
+      optional("MAX_INPUT_TOKENS", "0")), 10),
   },
   rateLimit: {
     // Per-user: max N requests per window
@@ -339,4 +345,5 @@ export const config = {
     token: optional("HEALTH_TOKEN", ""),
   },
   logLevel: optional("LOG_LEVEL", "info"),
+  logRaw:   optional("LOG_RAW",   "false") === "true",
 };

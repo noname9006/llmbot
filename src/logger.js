@@ -2,6 +2,7 @@ import { config } from "./config.js";
 
 const LEVELS = { debug: 0, info: 1, warn: 2, error: 3 };
 const currentLevel = LEVELS[config.logLevel] ?? LEVELS.info;
+const logRaw = config.logRaw;
 
 function timestamp() {
   return new Date().toISOString();
@@ -56,4 +57,17 @@ export const logger = {
   error: (...args) => log("error", ...args),
   /** Create a latency timer. Call the returned function to log elapsed time. */
   timer,
+
+  /**
+   * Logs raw LLM input/output payloads.
+   * Only active when LOG_RAW=true. Writes at DEBUG level so it is also
+   * gated by LOG_LEVEL (set LOG_LEVEL=debug + LOG_RAW=true to see it).
+   * @param {string} label  e.g. "→ remote input" / "← remote output"
+   * @param {*} payload
+   */
+  raw(label, payload) {
+    if (!logRaw) return;
+    log("debug", `[RAW] ${label}`,
+      typeof payload === "string" ? payload : JSON.stringify(payload, null, 2));
+  },
 };
