@@ -42,6 +42,16 @@ function modelOpts(role) {
 // Leave headroom for edits — Discord's hard limit is 2000 chars
 const STREAM_CHUNK_LIMIT = 1900;
 
+// Short casual phrases prepended to search ack messages — one is picked at random
+// each time so the ack doesn't feel repetitive.
+const SEARCH_ACK_PHRASES = [
+  "Lemme check that real quick.",
+  "Hold on, need to look that up.",
+  "One sec, pulling that up.",
+  "Let me grab some fresh data on that.",
+  "Checking on that now.",
+];
+
 // Regex to detect search signal from any model.
 // Uses [^\n]+ (not .+ with /s) so only the first line is captured as the
 // query — prevents multi-line model output from polluting the search term.
@@ -635,7 +645,8 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
 
   // Post a deterministic ack — an LLM-generated ack is unreliable here because
   // the model frequently echoes __SEARCH__: back when it sees the signal in context.
-  const searchAck = `🔍 Looking up "${query}"…`;
+  const phrase = SEARCH_ACK_PHRASES[Math.floor(Math.random() * SEARCH_ACK_PHRASES.length)];
+  const searchAck = `${phrase}\n🔍 Looking up "${query}"…`;
   await sendChunked(message, searchAck);
 
   // 2. Run the SearXNG query
@@ -726,7 +737,8 @@ export async function handleForcedSearch(message, query) {
 
     // Post acknowledgement
     // Deterministic ack — avoids the model echoing __SEARCH__: back
-    const searchAck = `🔍 Looking up "${safeQuery}"…`;
+    const phrase = SEARCH_ACK_PHRASES[Math.floor(Math.random() * SEARCH_ACK_PHRASES.length)];
+    const searchAck = `${phrase}\n🔍 Looking up "${safeQuery}"…`;
     await sendChunked(message, searchAck);
 
     // Run search
