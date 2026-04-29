@@ -131,6 +131,7 @@ export async function startVpsLlamaServer() {
   const POLL_INTERVAL_MS = 1_000;
   const TIMEOUT_MS = 60_000;
   const HEALTH_CHECK_TIMEOUT_MS = 2_000;
+  const STARTUP_VALIDATION_DELAY_MS = 250;
   const deadline = Date.now() + TIMEOUT_MS;
 
   while (Date.now() < deadline) {
@@ -145,7 +146,7 @@ export async function startVpsLlamaServer() {
           // declare it ready. Without this, a port-conflict failure (exit code 1) can
           // race against the health poll: the OLD process answers the /health request
           // while the NEW process has already died, giving a false "ready" result.
-          await new Promise((r) => setTimeout(r, 250));
+          await new Promise((r) => setTimeout(r, STARTUP_VALIDATION_DELAY_MS));
           if (vpsProcess !== proc) {
             throw new Error("[remoteLlama] llama-server exited before becoming ready");
           }

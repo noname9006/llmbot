@@ -60,6 +60,7 @@ const MSG_SEARCH_EMPTY_QUERY =
   "I wanted to search for something but couldn't determine a valid query.";
 const MSG_SEARCH_RECURSION =
   "I tried to look that up but wasn't able to find a satisfactory result.";
+const MSG_GREETING_FALLBACK = "Sup 👀";
 
 // Per-user rate limiter
 const rateLimiter = createRateLimiter({
@@ -153,10 +154,10 @@ export async function onRemoteMessage(message, remoteClient, localClient) {
       const rawGreet = stripThinkBlock(
         await llamaChat(config.llama.remoteUrl, greetMessages, modelOpts("remote"))
       );
-      await sendChunked(message, rawGreet.trim() || "Sup 👀");
+      await sendChunked(message, rawGreet.trim() || MSG_GREETING_FALLBACK);
     } catch (err) {
       logger.warn(`[${greetReqId}] greeting LLM call failed: ${err.message}`);
-      await message.reply("Sup 👀").catch(() => {});
+      await message.reply(MSG_GREETING_FALLBACK).catch(() => {});
     }
     return;
   }
