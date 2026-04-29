@@ -187,10 +187,10 @@ export async function startVpsLlamaServer() {
  */
 export async function warmupRemoteModel() {
   try {
-    const WARMUP_TIMEOUT_MS = 30_000;
+    const warmupTimeoutMs = config.llama.fetchTimeoutRemote;  // honours LLM_FETCH_TIMEOUT_MS_REMOTE / LLM_FETCH_TIMEOUT_MS
     const url = config.llama.remoteUrl;
 
-    logger.info("[remoteLlama] Warming up model (sending minimal inference request)…");
+    logger.info(`[remoteLlama] Warming up model (timeout: ${warmupTimeoutMs}ms)…`);
 
     const res = await fetch(`${url}/chat/completions`, {
       method: "POST",
@@ -203,7 +203,7 @@ export async function warmupRemoteModel() {
         max_tokens: 1,
         stream: false,
       }),
-      signal: AbortSignal.timeout(WARMUP_TIMEOUT_MS),
+      signal: AbortSignal.timeout(warmupTimeoutMs),
     });
 
     if (res.ok) {
