@@ -51,14 +51,18 @@ function shellSplit(str) {
  * @param {number} port
  * @returns {Promise<void>}
  */
-function freePort(port) {
+async function freePort(port) {
+  // Validate port is a safe integer in the valid range to prevent command injection
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    logger.warn(`[remoteLlama] freePort: invalid port ${port}, skipping`);
+    return;
+  }
   try {
     execSync(`fuser -k ${port}/tcp`, { stdio: "ignore" });
     logger.info(`[remoteLlama] Freed port ${port} before starting llama-server`);
-    return new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 500));
   } catch {
     // fuser exits non-zero when nothing is using the port — that's expected
-    return Promise.resolve();
   }
 }
 
