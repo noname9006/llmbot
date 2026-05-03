@@ -1,4 +1,4 @@
-import { spawn, execSync } from "child_process";
+import { spawn, execFileSync } from "child_process";
 import fs from "fs";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
@@ -45,8 +45,8 @@ function shellSplit(str) {
 }
 
 /**
- * Kills any process currently bound to the given TCP port using `fuser -k`,
- * then waits 500 ms to give the OS time to release the socket.
+ * Kills any process currently bound to the given TCP port using `fuser -k`
+ * (Linux only), then waits for the OS to release the socket.
  * Errors are swallowed because fuser exits non-zero when nothing uses the port.
  * @param {number} port
  * @returns {Promise<void>}
@@ -57,10 +57,11 @@ async function freePort(port) {
     logger.warn(`[remoteLlama] freePort: invalid port ${port}, skipping`);
     return;
   }
+  const PORT_RELEASE_WAIT_MS = 500;
   try {
-    execSync(`fuser -k ${port}/tcp`, { stdio: "ignore" });
+    execFileSync("fuser", ["-k", `${port}/tcp`], { stdio: "ignore" });
     logger.info(`[remoteLlama] Freed port ${port} before starting llama-server`);
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, PORT_RELEASE_WAIT_MS));
   } catch {
     // fuser exits non-zero when nothing is using the port — that's expected
   }
