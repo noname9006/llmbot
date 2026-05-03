@@ -1,4 +1,4 @@
-import { spawn } from "child_process";
+import { spawn, execSync } from "child_process";
 import fs from "fs";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
@@ -42,6 +42,24 @@ function shellSplit(str) {
   }
 
   return args;
+}
+
+/**
+ * Kills any process currently bound to the given TCP port using `fuser -k`,
+ * then waits 500 ms to give the OS time to release the socket.
+ * Errors are swallowed because fuser exits non-zero when nothing uses the port.
+ * @param {number} port
+ * @returns {Promise<void>}
+ */
+function freePort(port) {
+  try {
+    execSync(`fuser -k ${port}/tcp`, { stdio: "ignore" });
+    logger.info(`[remoteLlama] Freed port ${port} before starting llama-server`);
+    return new Promise((r) => setTimeout(r, 500));
+  } catch {
+    // fuser exits non-zero when nothing is using the port — that's expected
+    return Promise.resolve();
+  }
 }
 
 /**
@@ -101,6 +119,7 @@ export async function startVpsLlamaServer() {
 
   logger.info(`[remoteLlama] Spawning llama-server: ${bin} ${args.join(" ")}`);
 
+  await freePort(port);
   const proc = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
 
   proc.stdout.on("data", (data) => {
