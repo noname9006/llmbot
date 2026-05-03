@@ -207,19 +207,13 @@ export async function onRemoteMessage(message, remoteClient, localClient) {
       config.history.maxInputTokensRemote
     );
 
-    // ── Inject ephemeral capitalization reminder ──────────────────────────────
-    const capReminder = buildCapReminder(userText);
-    const messagesWithReminder = capReminder
-      ? [...messages, { role: "user", content: capReminder }]
-      : messages;
-
     const done = logger.timer(`[${reqId}] full response`, "info");
     let fullResponse;
     try {
       fullResponse = await routeRemoteRequest(
         reqId,
         message,
-        messagesWithReminder,
+        messages,
         localClient
       );
     } finally {
@@ -847,37 +841,6 @@ async function sendChunked(message, text) {
       logger.warn(`sendChunked: failed to send chunk ${i + 1}/${chunks.length}: ${err.message}`);
     });
   }
-}
-
-/**
- * Detects the capitalization style of the first word of `text` and returns
- * an ephemeral system-level reminder string that covers both capitalization
- * rules and the escalation check, or `null` if the text is empty.
- * @param {string} text
- * @returns {string|null}
- */
-function buildCapReminder(text) {
-  const firstWord = text.trim().split(/\s+/)[0];
-  if (!firstWord) return null;
-
-  // Extract only the letters from the first word to determine its casing
-  const letters = firstWord.replace(/[^A-Za-z]/g, "");
-
-  let capRule;
-  if (!letters) {
-    // First word has no letters at all — fall back to lowercase reminder
-    capRule = "User's message is lowercase. Your response must be entirely lowercase.";
-  } else if (letters.length > 1 && letters === letters.toUpperCase()) {
-    capRule = "User's message is ALL CAPS. Your ENTIRE response must be ALL CAPS.";
-  } else if (letters[0] === letters[0].toUpperCase()) {
-    capRule =
-      "User's message starts with uppercase. Your response MUST start with an uppercase letter and use normal sentence capitalization.";
-  } else {
-    capRule =
-      "User's message is lowercase. Your response must be entirely lowercase.";
-  }
-
-  return `[SYSTEM REMINDER — Capitalization: ${capRule}]`;
 }
 
 /**
