@@ -1,4 +1,4 @@
-import { config } from "../config.js";
+import { config, resolveDynamicPrompt } from "../config.js";
 import { logger } from "../logger.js";
 
 // Histories inactive for longer than this are evicted by cleanup()
@@ -66,7 +66,7 @@ class HistoryService {
     this.#touch(userId);
     const history = this.#store.get(userId) ?? [];
     const messages = [
-      { role: "system", content: systemPrompt },
+      { role: "system", content: resolveDynamicPrompt(systemPrompt) },
       ...history,
     ];
     if (maxInputTokens <= 0) return messages;

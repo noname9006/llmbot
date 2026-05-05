@@ -142,6 +142,39 @@ describe("buildSystemPrompt()", () => {
   });
 });
 
+// ── Test resolveDynamicPrompt() ───────────────────────────────────────────────
+// We re-implement the function using the same logic as config.js so that we
+// can unit-test it without loading the full module tree.
+
+function resolveDynamicPromptWith(template) {
+  const date = new Date().toISOString().slice(0, 10);
+  return template.replaceAll("{{CURRENT_DATE}}", date);
+}
+
+describe("resolveDynamicPrompt()", () => {
+  test("replaces {{CURRENT_DATE}} with today's date in YYYY-MM-DD format", () => {
+    const result = resolveDynamicPromptWith("Current date: {{CURRENT_DATE}}");
+    const expected = new Date().toISOString().slice(0, 10);
+    assert.equal(result, `Current date: ${expected}`);
+  });
+
+  test("replaces all occurrences of {{CURRENT_DATE}}", () => {
+    const result = resolveDynamicPromptWith("Date: {{CURRENT_DATE}}. Repeat: {{CURRENT_DATE}}.");
+    const expected = new Date().toISOString().slice(0, 10);
+    assert.equal(result, `Date: ${expected}. Repeat: ${expected}.`);
+  });
+
+  test("returns the template unchanged when no placeholder is present", () => {
+    const template = "No placeholder here.";
+    assert.equal(resolveDynamicPromptWith(template), template);
+  });
+
+  test("date matches YYYY-MM-DD format", () => {
+    const result = resolveDynamicPromptWith("{{CURRENT_DATE}}");
+    assert.match(result, /^\d{4}-\d{2}-\d{2}$/);
+  });
+});
+
 // ── Test stripSignals() ───────────────────────────────────────────────────────
 // We inline the same logic as the production function so these tests run
 // without importing the full messageHandler module (which has side-effects).

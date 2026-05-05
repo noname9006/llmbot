@@ -131,6 +131,17 @@ function buildSystemPrompt(raw) {
   return text.trim();
 }
 
+/**
+ * Resolves runtime placeholders in a system prompt template.
+ * Called per-request so values like the current date are always fresh.
+ * @param {string} template
+ * @returns {string}
+ */
+export function resolveDynamicPrompt(template) {
+  const date = new Date().toISOString().slice(0, 10); // e.g. "2026-05-05"
+  return template.replaceAll("{{CURRENT_DATE}}", date);
+}
+
 // ── Pre-computed fallbacks used by per-model config fields ───────────────────
 
 const _extraArgsFallback = optional("LLAMA_EXTRA_ARGS", "");

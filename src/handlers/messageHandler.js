@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { config } from "../config.js";
+import { config, resolveDynamicPrompt } from "../config.js";
 import { logger } from "../logger.js";
 import { historyService } from "../services/historyService.js";
 import { llamaChat } from "../services/llamaService.js";
@@ -153,7 +153,7 @@ export async function onRemoteMessage(message, remoteClient, localClient) {
     logger.debug(`[${greetReqId}] [${message.author.tag}] mentioned bot with no text — generating greeting`);
     try {
       const greetMessages = [
-        { role: "system", content: config.llm.systemPromptRemote },
+        { role: "system", content: resolveDynamicPrompt(config.llm.systemPromptRemote) },
         {
           role: "user",
           content:
