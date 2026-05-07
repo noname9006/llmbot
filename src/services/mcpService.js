@@ -8,7 +8,10 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 
-/** @type {Array<{ name: string, client: Client, toolNames: Set<string> }>} */
+const MCP_CONNECT_TIMEOUT_MS = 10_000;
+const MCP_LIST_TOOLS_TIMEOUT_MS = 10_000;
+
+/** @type {Array<{ name: string, client: Client }>} */
 const mcpClients = [];
 
 /**
@@ -20,6 +23,23 @@ const mcpClients = [];
  * }>}
  */
 let cachedTools = [];
+
+async function withTimeout(promise, ms, label) {
+  let timeoutId;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(
+          () => reject(new Error(`${label} timed out after ${ms}ms`)),
+          ms
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 function safeArgsPreview(args) {
   try {
@@ -50,28 +70,41 @@ async function connectToServer(serverName, url, transport, headers = {}) {
       ? new SSEClientTransport(urlObj, { requestInit: { headers } })
       : new StreamableHTTPClientTransport(urlObj, { requestInit: { headers } });
 
-  logger.info(`[mcp] Connecting to ${serverName} (${url}) via ${transport}…`);
-  await client.connect(transportInstance);
-  logger.info(`[mcp] Connected to ${serverName}`);
+  try {
+    logger.info(`[mcp] Connecting to ${serverName} (${url}) via ${transport}…`);
+    await withTimeout(
+      client.connect(transportInstance),
+      MCP_CONNECT_TIMEOUT_MS,
+      `[mcp] Connect to ${serverName}`
+    );
+    logger.info(`[mcp] Connected to ${serverName}`);
 
-  const { tools } = await client.listTools();
-  const toolNames = new Set(tools.map((t) => t.name));
+    const { tools } = await withTimeout(
+      client.listTools(),
+      MCP_LIST_TOOLS_TIMEOUT_MS,
+      `[mcp] listTools(${serverName})`
+    );
+    const toolNames = new Set(tools.map((t) => t.name));
 
-  logger.info(`[mcp] ${serverName} provides ${tools.length} tool(s): ${[...toolNames].join(", ")}`);
+    logger.info(`[mcp] ${serverName} provides ${tools.length} tool(s): ${[...toolNames].join(", ")}`);
 
-  const prefixedTools = tools.map((t) => ({
-    type: "function",
-    function: {
-      name: `${serverName}__${t.name}`,
-      description: t.description ?? "",
-      parameters: t.inputSchema ?? { type: "object", properties: {} },
-    },
-    _serverName: serverName,
-    _originalName: t.name,
-  }));
+    const prefixedTools = tools.map((t) => ({
+      type: "function",
+      function: {
+        name: `${serverName}__${t.name}`,
+        description: t.description ?? "",
+        parameters: t.inputSchema ?? { type: "object", properties: {} },
+      },
+      _serverName: serverName,
+      _originalName: t.name,
+    }));
 
-  mcpClients.push({ name: serverName, client, toolNames });
-  cachedTools.push(...prefixedTools);
+    mcpClients.push({ name: serverName, client });
+    cachedTools.push(...prefixedTools);
+  } catch (err) {
+    await client.close().catch(() => {});
+    throw err;
+  }
 }
 
 export async function initMcp() {
@@ -138,9 +171,9 @@ export async function shutdownMcp() {
       await client.close();
       logger.debug(`[mcp] Disconnected from ${name}`);
     } catch (err) {
-      logger.debug(`[mcp] Error disconnecting from ${name}: ${err.message}`);
+      logger.warn(`[mcp] Error disconnecting from ${name}: ${err.message}`);
     }
   }
   mcpClients.length = 0;
-  cachedTools = [];
+  cachedTools.length = 0;
 }

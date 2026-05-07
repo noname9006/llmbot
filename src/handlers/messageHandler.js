@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { config, resolveDynamicPrompt } from "../config.js";
 import { logger } from "../logger.js";
 import { historyService } from "../services/historyService.js";
+import { llamaChat } from "../services/llamaService.js";
 import { llamaWithTools } from "../services/toolCallService.js";
 import { isLocalAvailable } from "../services/localAvailabilityService.js";
 import { ensureLocalModel } from "../services/agentService.js";
@@ -14,11 +15,11 @@ import {
   setLocalPresenceCooldown,
 } from "../services/localPresenceService.js";
 
-// ── Per-model llamaChat options ───────────────────────────────────────────────
+// ── Per-model LLM options ─────────────────────────────────────────────────────
 
 /**
- * Returns llamaChat opts (API inference params + per-call fetch timeout) for
- * the given model role.  Callers spread this into their llamaChat opts argument
+ * Returns LLM opts (API inference params + per-call fetch timeout) for
+ * the given model role. Callers spread this into llamaChat / llamaWithTools opts
  * so the correct params are sent for every role.
  *
  * @param {'remote'|'local'} role
@@ -162,7 +163,7 @@ export async function onRemoteMessage(message, remoteClient, localClient) {
         },
       ];
       const rawGreet = stripThinkBlock(
-        await llamaWithTools(config.llama.remoteUrl, greetMessages, modelOpts("remote"))
+        await llamaChat(config.llama.remoteUrl, greetMessages, modelOpts("remote"))
       );
       await sendChunked(message, rawGreet.trim() || MSG_GREETING_FALLBACK);
     } catch (err) {
@@ -618,7 +619,7 @@ async function routeRemoteRequest(reqId, message, messages, localClient) {
  * @param {Array<{role: string, content: string}>} messages  - full history up to this point
  * @param {string} modelResponse  - the raw model response containing the search signal
  * @param {string} baseUrl
- * @param {object} [opts]  - llamaChat opts (inference params + fetchTimeout) for this role
+ * @param {object} [opts]  - llamaWithTools opts (inference params + fetchTimeout) for this role
  * @returns {Promise<string>}  the final answer after search
  */
 async function handleSearchSignal(reqId, message, messages, modelResponse, baseUrl, opts = {}) {
