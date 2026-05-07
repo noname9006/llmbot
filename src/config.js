@@ -199,6 +199,71 @@ const _discordTokenRemote = (() => {
   );
 })();
 
+function normalizeMcpTransport(value, fallback = "streamable-http") {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (normalized === "sse" || normalized === "streamable-http") return normalized;
+  throw new Error(
+    `Invalid MCP transport "${value}". Allowed values are "streamable-http" or "sse".`
+  );
+}
+
+function pushUniqueMcpServer(servers, seenNames, server) {
+  if (seenNames.has(server.name)) {
+    throw new Error(
+      `Duplicate MCP server name "${server.name}". Every MCP server name must be unique.`
+    );
+  }
+  seenNames.add(server.name);
+  servers.push(server);
+}
+
+function buildMcpServers() {
+  /** @type {Array<{name: string, url: string, transport: "streamable-http"|"sse", headers?: Record<string, string>}>} */
+  const servers = [];
+  const seenNames = new Set();
+
+  if (optional("MCP_COINGECKO_ENABLED", "false") === "true") {
+    const cgApiKey = optional("MCP_COINGECKO_API_KEY", "").trim();
+    pushUniqueMcpServer(servers, seenNames, {
+      name: "coingecko",
+      url: "https://mcp.api.coingecko.com/",
+      transport: "streamable-http",
+      ...(cgApiKey ? { headers: { "x-cg-pro-api-key": cgApiKey } } : {}),
+    });
+  }
+
+  if (optional("MCP_GITBOOK_ENABLED", "false") === "true") {
+    const gitbookUrl = optional("MCP_GITBOOK_URL", "").trim();
+    if (!gitbookUrl) {
+      throw new Error("MCP_GITBOOK_ENABLED=true requires MCP_GITBOOK_URL to be set.");
+    }
+    const token = optional("MCP_GITBOOK_TOKEN", "").trim();
+    pushUniqueMcpServer(servers, seenNames, {
+      name: "gitbook",
+      url: gitbookUrl,
+      transport: normalizeMcpTransport(optional("MCP_GITBOOK_TRANSPORT", "streamable-http")),
+      ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
+    });
+  }
+
+  for (let i = 1; i <= 10; i++) {
+    const name = optional(`MCP_SERVER_${i}_NAME`, "").trim();
+    const url = optional(`MCP_SERVER_${i}_URL`, "").trim();
+    if (!name || !url) continue;
+
+    const apiKey = optional(`MCP_SERVER_${i}_API_KEY`, "").trim();
+    pushUniqueMcpServer(servers, seenNames, {
+      name,
+      url,
+      transport: normalizeMcpTransport(optional(`MCP_SERVER_${i}_TRANSPORT`, "streamable-http")),
+      ...(apiKey ? { headers: { "x-api-key": apiKey } } : {}),
+    });
+  }
+
+  return servers;
+}
+
 export const config = {
   discord: {
     // Bot #1 — Remote model (always-on VPS)
@@ -354,6 +419,10 @@ export const config = {
     port: parseInt(optional("HEALTH_PORT", "0"), 10),
     // Optional bearer token to protect the /health endpoint. Empty = no auth.
     token: optional("HEALTH_TOKEN", ""),
+  },
+  mcp: {
+    enabled: optional("MCP_ENABLED", "false") === "true",
+    servers: buildMcpServers(),
   },
   logLevel: optional("LOG_LEVEL", "info"),
   logRaw:   optional("LOG_RAW",   "false") === "true",

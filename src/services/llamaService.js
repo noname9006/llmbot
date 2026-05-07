@@ -7,11 +7,12 @@ import { withRetry } from "../utils/retry.js";
  *
  * @param {string} baseUrl  - OpenAI-compat API base, including the /v1 prefix
  *                            e.g. "http://localhost:8080/v1"
- * @param {Array<{role: string, content: string}>} messages
+ * @param {Array} messages
  * @param {object} [opts]   - optional overrides merged into the request body
- * @returns {Promise<string>} - the assistant's response text
+ * @param {Array} [tools]
+ * @returns {Promise<{ content: string|null, tool_calls: Array|null }>}
  */
-export async function llamaChat(baseUrl, messages, opts = {}) {
+export async function llamaChatCompletion(baseUrl, messages, opts = {}, tools = []) {
   // Extract fetchTimeout before spreading opts into the API request body.
   // fetchTimeout is a bot-level control; it must not be sent to llama-server.
   const { fetchTimeout: optsFetchTimeout, ...bodyOpts } = opts;
@@ -20,6 +21,7 @@ export async function llamaChat(baseUrl, messages, opts = {}) {
     messages,
     stream: false,
     ...bodyOpts,
+    ...(tools.length > 0 ? { tools, tool_choice: "auto" } : {}),
   };
 
   // Per-call timeout takes priority; falls back to global config.
@@ -31,6 +33,7 @@ export async function llamaChat(baseUrl, messages, opts = {}) {
     bodyOpts.top_k        !== undefined ? `top_k=${bodyOpts.top_k}`                : null,
     bodyOpts.max_tokens   !== undefined ? `max_tokens=${bodyOpts.max_tokens}`      : null,
     bodyOpts.budget_tokens !== undefined ? `budget_tokens=${bodyOpts.budget_tokens}` : null,
+    `tools=${tools.length}`,
   ].filter(Boolean).join(" ");
 
   logger.debug(`llamaChat → ${baseUrl} messages=${messages.length}${paramSummary ? ` [${paramSummary}]` : ""}`);
@@ -74,9 +77,11 @@ export async function llamaChat(baseUrl, messages, opts = {}) {
           );
         }
 
-        const content = data?.choices?.[0]?.message?.content ?? "";
-        logger.debug(`llamaChat ← ${content.length} chars`);
-        return content.trim();
+        const message = data?.choices?.[0]?.message;
+        const toolCalls = message?.tool_calls?.length ? message.tool_calls : null;
+        const content = typeof message?.content === "string" ? message.content.trim() : null;
+        logger.debug(`llamaChat ← ${content?.length ?? 0} chars tool_calls=${toolCalls?.length ?? 0}`);
+        return { content, tool_calls: toolCalls };
       },
       {
         maxAttempts: config.retry.maxAttempts,
@@ -90,4 +95,17 @@ export async function llamaChat(baseUrl, messages, opts = {}) {
     // Always log elapsed time — success or all-retries-exhausted failure
     done();
   }
+}
+
+/**
+ * Backward-compatible text-only wrapper.
+ *
+ * @param {string} baseUrl
+ * @param {Array} messages
+ * @param {object} [opts]
+ * @returns {Promise<string>}
+ */
+export async function llamaChat(baseUrl, messages, opts = {}) {
+  const { content } = await llamaChatCompletion(baseUrl, messages, opts, []);
+  return content ?? "";
 }
