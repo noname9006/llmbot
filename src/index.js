@@ -4,6 +4,7 @@ import { remoteClient, localClient } from "./bot.js";
 import { getSemaphoreStats } from "./handlers/messageHandler.js";
 import { clearLocalIdleTimer } from "./services/agentService.js";
 import { startVpsLlamaServer, stopVpsLlamaServer, warmupRemoteModel } from "./services/vpsLlamaProcess.js";
+import { initMcp, shutdownMcp } from "./services/mcpService.js";
 
 // Deprecation warning for legacy DISCORD_TOKEN env var
 if (process.env._DISCORD_TOKEN_DEPRECATED === "1") {
@@ -25,6 +26,7 @@ const searchStatus = config.search.enabled === "off"
   ? "disabled"
   : `enabled (mode: ${config.search.mode}, cmd: ${config.search.command})`;
 logger.info(`Search: ${searchStatus}`);
+logger.info(`MCP: ${config.mcp.enabled ? "enabled" : "disabled"} (configured servers: ${config.mcp.servers.length})`);
 
 logger.debug(`Log level: ${config.logLevel}`);
 logger.debug(`Rate limit: ${config.rateLimit.maxRequests} req / ${config.rateLimit.windowMs} ms window, max concurrent: ${config.rateLimit.maxConcurrent}`);
@@ -41,6 +43,7 @@ try {
 
 // Warm up the remote model so the first user message isn't delayed by a cold start
 await warmupRemoteModel();
+await initMcp();
 
 // Login — remote bot is required; local bot is optional
 remoteClient.login(config.discord.tokenRemote).catch((err) => {
@@ -84,6 +87,7 @@ async function shutdown(signal) {
   clearLocalIdleTimer();
 
   await stopVpsLlamaServer();
+  await shutdownMcp();
 
   logger.info("Shutdown complete — disconnecting from Discord");
   remoteClient.destroy();
@@ -102,4 +106,3 @@ process.on("uncaughtException", (err) => {
 process.on("unhandledRejection", (reason) => {
   logger.error("Unhandled rejection:", reason);
 });
-

@@ -2,7 +2,7 @@ import { randomUUID } from "crypto";
 import { config, resolveDynamicPrompt } from "../config.js";
 import { logger } from "../logger.js";
 import { historyService } from "../services/historyService.js";
-import { llamaChat } from "../services/llamaService.js";
+import { llamaWithTools } from "../services/toolCallService.js";
 import { isLocalAvailable } from "../services/localAvailabilityService.js";
 import { ensureLocalModel } from "../services/agentService.js";
 import { search } from "../services/searchService.js";
@@ -162,7 +162,7 @@ export async function onRemoteMessage(message, remoteClient, localClient) {
         },
       ];
       const rawGreet = stripThinkBlock(
-        await llamaChat(config.llama.remoteUrl, greetMessages, modelOpts("remote"))
+        await llamaWithTools(config.llama.remoteUrl, greetMessages, modelOpts("remote"))
       );
       await sendChunked(message, rawGreet.trim() || MSG_GREETING_FALLBACK);
     } catch (err) {
@@ -330,7 +330,7 @@ export async function onLocalMessage(message, localClient, remoteClient) {
 
     logger.raw("→ local input", messages);
     const rawResponse = stripThinkBlock(
-      await llamaChat(config.llama.localUrl, messages, modelOpts("local"))
+      await llamaWithTools(config.llama.localUrl, messages, modelOpts("local"))
     );
     logger.raw("← local output", rawResponse);
 
@@ -436,7 +436,7 @@ export async function onLocalDirectMessage(message, localClient) {
 
     logger.raw("→ local direct input", messages);
     const rawResponse = stripThinkBlock(
-      await llamaChat(config.llama.localUrl, messages, modelOpts("local"))
+      await llamaWithTools(config.llama.localUrl, messages, modelOpts("local"))
     );
     logger.raw("← local direct output", rawResponse);
 
@@ -539,7 +539,7 @@ async function routeRemoteRequest(reqId, message, messages, localClient) {
 
   logger.raw("→ remote input", messagesForModel);
   const rawResponse = stripThinkBlock(
-    await llamaChat(config.llama.remoteUrl, messagesForModel, modelOpts("remote"))
+    await llamaWithTools(config.llama.remoteUrl, messagesForModel, modelOpts("remote"))
   );
   logger.raw("← remote output", rawResponse);
 
@@ -666,7 +666,7 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
   ];
 
   logger.raw(`→ ${role} search-result input`, messagesWithResults);
-  const finalResponse = stripThinkBlock(await llamaChat(baseUrl, messagesWithResults, opts));
+  const finalResponse = stripThinkBlock(await llamaWithTools(baseUrl, messagesWithResults, opts));
   logger.raw(`← ${role} search-result output`, finalResponse);
 
   // Guard against the model returning another search signal — prevents the
@@ -758,7 +758,7 @@ export async function handleForcedSearch(message, query) {
     ];
 
     logger.raw("→ forced-search result input", messagesWithResults);
-    const finalResponse = stripThinkBlock(await llamaChat(baseUrl, messagesWithResults, llmOpts));
+    const finalResponse = stripThinkBlock(await llamaWithTools(baseUrl, messagesWithResults, llmOpts));
     logger.raw("← forced-search result output", finalResponse);
     await sendChunked(message, finalResponse);
 
@@ -792,7 +792,7 @@ async function retryWithoutSearch(reqId, message, messages, baseUrl, opts = {}) 
     },
   ];
   logger.raw("→ retry-without-search input", retryMessages);
-  const retryResponse = stripThinkBlock(await llamaChat(baseUrl, retryMessages, opts));
+  const retryResponse = stripThinkBlock(await llamaWithTools(baseUrl, retryMessages, opts));
   logger.raw("← retry-without-search output", retryResponse);
   await sendChunked(message, retryResponse);
   return retryResponse;
