@@ -5,6 +5,13 @@ import { getMcpTools, callMcpTool } from "./mcpService.js";
 
 const MAX_TOOL_ROUNDS = 5;
 
+function sanitizeToolErrorMessage(err) {
+  const msg = err?.message ? String(err.message) : "unknown error";
+  return /(token|secret|password|api[_-]?key|authorization|auth|bearer|cookie|session)/i.test(msg)
+    ? "tool execution failed due to a protected error"
+    : msg;
+}
+
 /**
  * @param {string} baseUrl
  * @param {Array} messages
@@ -112,8 +119,9 @@ export async function llamaWithTools(baseUrl, messages, opts = {}) {
           : (tc.function.arguments ?? {});
         toolResult = await callMcpTool(tc.function.name, args);
       } catch (err) {
-        logger.warn(`[tool-call] Tool ${tc.function.name} failed: ${err.message}`);
-        toolResult = `Error calling tool ${tc.function.name}: ${err.message}`;
+        const safeMessage = sanitizeToolErrorMessage(err);
+        logger.warn(`[tool-call] Tool ${tc.function.name} failed: ${safeMessage}`);
+        toolResult = `Error calling tool ${tc.function.name}: ${safeMessage}`;
       }
 
       currentMessages.push({

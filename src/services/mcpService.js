@@ -21,6 +21,21 @@ const mcpClients = [];
  */
 let cachedTools = [];
 
+function safeArgsPreview(args) {
+  try {
+    const redacted = JSON.parse(JSON.stringify(args ?? {}, (key, value) => {
+      if (/(token|secret|password|api[_-]?key|authorization|auth|bearer|cookie|session)/i.test(key)) {
+        return "[REDACTED]";
+      }
+      return value;
+    }));
+    const json = JSON.stringify(redacted);
+    return json.length > 300 ? `${json.slice(0, 300)}…` : json;
+  } catch {
+    return "[unserializable args]";
+  }
+}
+
 /**
  * @param {string} serverName
  * @param {string} url
@@ -96,7 +111,9 @@ export async function callMcpTool(prefixedName, args) {
     throw new Error(`[mcp] No client for server: ${toolEntry._serverName}`);
   }
 
-  logger.debug(`[mcp] Calling tool ${toolEntry._originalName} on ${toolEntry._serverName} args=${JSON.stringify(args)}`);
+  logger.debug(
+    `[mcp] Calling tool ${toolEntry._originalName} on ${toolEntry._serverName} args=${safeArgsPreview(args)}`
+  );
 
   const result = await serverEntry.client.callTool({
     name: toolEntry._originalName,
