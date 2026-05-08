@@ -239,7 +239,8 @@ function normalizeGitBookMcpUrl(rawUrl, sourceEnvKey) {
     const normalized = parsed.toString();
     logConfigDebug(`[mcp] normalized ${sourceEnvKey}: "${trimmed}" -> "${normalized}"`);
     return normalized;
-  } catch {
+  } catch (err) {
+    logConfigDebug(`[mcp] URL parsing failed for ${sourceEnvKey}: "${trimmed}" (${err.message})`);
     if (/\/~gitbook\/mcp\/?$/i.test(trimmed)) {
       return trimmed.replace(/\/+$/g, "");
     }
