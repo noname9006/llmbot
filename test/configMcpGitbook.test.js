@@ -56,6 +56,15 @@ describe("config.mcp GitBook server building", () => {
     assert.equal(config.mcp.servers[0].url, "https://docs.example.com/project/~gitbook/mcp");
   });
 
+  test("appends MCP path before query/hash segments", async () => {
+    process.env.MCP_GITBOOK_URL_1 = "https://docs.example.com/project/?tab=api#section";
+    const { config } = await loadConfigFresh();
+    assert.equal(
+      config.mcp.servers[0].url,
+      "https://docs.example.com/project/~gitbook/mcp?tab=api#section"
+    );
+  });
+
   test("uses per-instance token when present, otherwise shared MCP_GITBOOK_TOKEN", async () => {
     process.env.MCP_GITBOOK_URL_1 = "https://docs.one.example/";
     process.env.MCP_GITBOOK_URL_2 = "https://docs.two.example/";

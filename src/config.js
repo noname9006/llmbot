@@ -227,13 +227,27 @@ function normalizeGitBookMcpUrl(rawUrl, sourceEnvKey) {
   const trimmed = String(rawUrl ?? "").trim();
   if (!trimmed) return "";
 
-  if (/\/~gitbook\/mcp\/?$/i.test(trimmed)) {
-    return trimmed.replace(/\/+$/g, "");
-  }
+  try {
+    const parsed = new URL(trimmed);
+    const path = parsed.pathname.replace(/\/+$/g, "");
+    if (/\/~gitbook\/mcp$/i.test(path)) {
+      parsed.pathname = path;
+      return parsed.toString();
+    }
 
-  const normalized = `${trimmed.replace(/\/+$/g, "")}/~gitbook/mcp`;
-  logConfigDebug(`[mcp] normalized ${sourceEnvKey}: "${trimmed}" -> "${normalized}"`);
-  return normalized;
+    parsed.pathname = `${path}/~gitbook/mcp`;
+    const normalized = parsed.toString();
+    logConfigDebug(`[mcp] normalized ${sourceEnvKey}: "${trimmed}" -> "${normalized}"`);
+    return normalized;
+  } catch {
+    if (/\/~gitbook\/mcp\/?$/i.test(trimmed)) {
+      return trimmed.replace(/\/+$/g, "");
+    }
+
+    const normalized = `${trimmed.replace(/\/+$/g, "")}/~gitbook/mcp`;
+    logConfigDebug(`[mcp] normalized ${sourceEnvKey}: "${trimmed}" -> "${normalized}"`);
+    return normalized;
+  }
 }
 
 function buildMcpServers() {
