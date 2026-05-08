@@ -218,6 +218,39 @@ function pushUniqueMcpServer(servers, seenNames, server) {
   servers.push(server);
 }
 
+function logConfigDebug(message) {
+  if (optional("LOG_LEVEL", "info").toLowerCase() !== "debug") return;
+  console.log(`[config] ${message}`);
+}
+
+function normalizeGitBookMcpUrl(rawUrl, sourceEnvKey) {
+  const trimmed = String(rawUrl ?? "").trim();
+  if (!trimmed) return "";
+
+  try {
+    const parsed = new URL(trimmed);
+    const path = parsed.pathname.replace(/\/+$/g, "");
+    if (/\/~gitbook\/mcp$/i.test(path)) {
+      parsed.pathname = path;
+      return parsed.toString();
+    }
+
+    parsed.pathname = `${path}/~gitbook/mcp`;
+    const normalized = parsed.toString();
+    logConfigDebug(`[mcp] normalized ${sourceEnvKey}: "${trimmed}" -> "${normalized}"`);
+    return normalized;
+  } catch (err) {
+    logConfigDebug(`[mcp] URL parsing failed for ${sourceEnvKey}: "${trimmed}" (${err.message})`);
+    if (/\/~gitbook\/mcp\/?$/i.test(trimmed)) {
+      return trimmed.replace(/\/+$/g, "");
+    }
+
+    const normalized = `${trimmed.replace(/\/+$/g, "")}/~gitbook/mcp`;
+    logConfigDebug(`[mcp] normalized ${sourceEnvKey}: "${trimmed}" -> "${normalized}"`);
+    return normalized;
+  }
+}
+
 function buildMcpServers() {
   /** @type {Array<{name: string, url: string, transport: "streamable-http"|"sse", headers?: Record<string, string>}>} */
   const servers = [];
@@ -234,17 +267,38 @@ function buildMcpServers() {
   }
 
   if (optional("MCP_GITBOOK_ENABLED", "false") === "true") {
-    const gitbookUrl = optional("MCP_GITBOOK_URL", "").trim();
-    if (!gitbookUrl) {
-      throw new Error("MCP_GITBOOK_ENABLED=true requires MCP_GITBOOK_URL to be set.");
+    const gitbookTransport = normalizeMcpTransport(optional("MCP_GITBOOK_TRANSPORT", "streamable-http"));
+    const sharedGitbookToken = optional("MCP_GITBOOK_TOKEN", "").trim();
+    let hasNumberedGitbookUrl = false;
+
+    for (let i = 1; i <= 10; i++) {
+      const envKey = `MCP_GITBOOK_URL_${i}`;
+      const gitbookUrlRaw = optional(envKey, "").trim();
+      if (!gitbookUrlRaw) continue;
+      hasNumberedGitbookUrl = true;
+
+      const token = optional(`MCP_GITBOOK_TOKEN_${i}`, "").trim() || sharedGitbookToken;
+      pushUniqueMcpServer(servers, seenNames, {
+        name: `gitbook-${i}`,
+        url: normalizeGitBookMcpUrl(gitbookUrlRaw, envKey),
+        transport: gitbookTransport,
+        ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
+      });
     }
-    const token = optional("MCP_GITBOOK_TOKEN", "").trim();
-    pushUniqueMcpServer(servers, seenNames, {
-      name: "gitbook",
-      url: gitbookUrl,
-      transport: normalizeMcpTransport(optional("MCP_GITBOOK_TRANSPORT", "streamable-http")),
-      ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
-    });
+
+    if (!hasNumberedGitbookUrl) {
+      const gitbookUrlLegacy = optional("MCP_GITBOOK_URL", "").trim();
+      if (!gitbookUrlLegacy) {
+        throw new Error("MCP_GITBOOK_ENABLED=true requires MCP_GITBOOK_URL_1..10 or legacy MCP_GITBOOK_URL to be set.");
+      }
+      const token = optional("MCP_GITBOOK_TOKEN", "").trim();
+      pushUniqueMcpServer(servers, seenNames, {
+        name: "gitbook-1",
+        url: normalizeGitBookMcpUrl(gitbookUrlLegacy, "MCP_GITBOOK_URL"),
+        transport: gitbookTransport,
+        ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
+      });
+    }
   }
 
   for (let i = 1; i <= 10; i++) {

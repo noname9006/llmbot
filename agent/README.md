@@ -50,13 +50,13 @@ Edit `.env`:
 - `AGENT_TOKEN` — set a strong random secret (must match `LOCAL_AGENT_TOKEN` in the bot's `.env`)
 - `LLAMA_SERVER_BIN` — full path to `llama-server.exe`
 - `LLAMA_MODEL_DIR` — directory containing your `.gguf` model files
-- `LLAMA_EXTRA_ARGS_COMMON` *(optional)* — extra args for the "common" model, passed verbatim to llama-server; takes priority over bot-sent values. Include `-ngl <N>` here to control GPU layer offload for this model.
-- `LLAMA_EXTRA_ARGS_HEAVY` *(optional)* — same for the "heavy" model
-- `LLAMA_CONTEXT_SIZE_COMMON` *(optional)* — context window size for the "common" model; takes priority over bot-sent values
-- `LLAMA_CONTEXT_SIZE_HEAVY` *(optional)* — same for the "heavy" model
+- `LLAMA_EXTRA_ARGS_LOCAL` *(optional)* — extra args for the local role, passed verbatim to llama-server; takes priority over bot-sent values. Include `-ngl <N>` here to control GPU layer offload.
+- `LLAMA_CONTEXT_SIZE_LOCAL` *(optional)* — context window size for the local role; takes priority over bot-sent values.
 - `LLAMA_EXTRA_ARGS` *(optional)* — global fallback extra args used when no per-model override is set
 - `LLAMA_CONTEXT_SIZE` *(optional)* — global fallback context size
-- `LLAMA_GPU_LAYERS` — for reference only; use `-ngl` inside `LLAMA_EXTRA_ARGS_COMMON`/`HEAVY` to control GPU offload per model
+- `LLAMA_GPU_LAYERS` — for reference only; use `-ngl` inside `LLAMA_EXTRA_ARGS_LOCAL` to control GPU offload
+
+Legacy note: `LLAMA_EXTRA_ARGS_COMMON` / `LLAMA_EXTRA_ARGS_HEAVY` and `LLAMA_CONTEXT_SIZE_COMMON` / `LLAMA_CONTEXT_SIZE_HEAVY` are still accepted for backward compatibility.
 
 ### 3. Run the agent
 
@@ -92,15 +92,15 @@ Starts llama-server with the requested model. Stops any currently running instan
 
 **Request:**
 ```json
-{ "model": "some-model.Q4_K_M.gguf", "role": "common", "extraArgs": "--flash-attn", "contextSize": 8192 }
+{ "model": "some-model.Q4_K_M.gguf", "role": "local", "extraArgs": "--flash-attn", "contextSize": 8192 }
 ```
 
-- `role` *(optional)* — `"common"` or `"heavy"`. Used to select per-model env var overrides on the agent.
-- `extraArgs` *(optional)* — extra flags passed verbatim to llama-server (space-separated). Ignored when the agent has `LLAMA_EXTRA_ARGS_COMMON`/`HEAVY` set for the given role.
-- `contextSize` *(optional)* — context window size. Ignored when the agent has `LLAMA_CONTEXT_SIZE_COMMON`/`HEAVY` set for the given role.
+- `role` *(optional)* — canonical `"local"`. Legacy `"common"` and `"heavy"` are still accepted as aliases.
+- `extraArgs` *(optional)* — extra flags passed verbatim to llama-server (space-separated). Ignored when the agent has role-specific env overrides set.
+- `contextSize` *(optional)* — context window size. Ignored when the agent has role-specific context env overrides set.
 
 **Priority for `extraArgs` and `contextSize`:**
-1. Agent's per-model env var (`LLAMA_EXTRA_ARGS_COMMON`/`HEAVY`, `LLAMA_CONTEXT_SIZE_COMMON`/`HEAVY`) — highest
+1. Agent's per-model env var (`LLAMA_EXTRA_ARGS_LOCAL`, `LLAMA_CONTEXT_SIZE_LOCAL`) — highest
 2. Bot-sent value from the request body
 3. Agent's global fallback (`LLAMA_EXTRA_ARGS`, `LLAMA_CONTEXT_SIZE`)
 
@@ -154,5 +154,5 @@ New-NetFirewallRule -DisplayName "llmbot llama-server" `
 
 **GPU not used**
 - Confirm you're using a Vulkan build of llama-server
-- Add `-ngl 99` (or an appropriate layer count) to `LLAMA_EXTRA_ARGS_COMMON` and `LLAMA_EXTRA_ARGS_HEAVY` in the agent's `.env`
+- Add `-ngl 99` (or an appropriate layer count) to `LLAMA_EXTRA_ARGS_LOCAL` in the agent's `.env`
 - Verify Vulkan drivers are installed: `vulkaninfo` in PowerShell
