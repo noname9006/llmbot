@@ -258,9 +258,10 @@ function buildMcpServers() {
 
   if (optional("MCP_COINGECKO_ENABLED", "false") === "true") {
     const cgApiKey = optional("MCP_COINGECKO_API_KEY", "").trim();
+    const cgUrl = optional("MCP_COINGECKO_URL", "https://mcp.api.coingecko.com/").trim();
     pushUniqueMcpServer(servers, seenNames, {
       name: "coingecko",
-      url: "https://mcp.api.coingecko.com/",
+      url: cgUrl,
       transport: "streamable-http",
       ...(cgApiKey ? { headers: { "x-cg-pro-api-key": cgApiKey } } : {}),
     });

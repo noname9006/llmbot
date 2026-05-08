@@ -460,6 +460,7 @@ Examples: `LLM_TEMPERATURE_REMOTE`, `LLM_TEMPERATURE_LOCAL`, `LLM_REASONING_BUDG
 | `MCP_ENABLED` | `false` | Master switch for MCP tool calling |
 | `MCP_COINGECKO_ENABLED` | `false` | Enable built-in CoinGecko MCP server |
 | `MCP_COINGECKO_API_KEY` | *(empty)* | Optional CoinGecko Pro key (`x-cg-pro-api-key`) |
+| `MCP_COINGECKO_URL` | `https://mcp.api.coingecko.com/` | CoinGecko MCP server URL |
 | `MCP_GITBOOK_ENABLED` | `false` | Enable built-in GitBook MCP integration |
 | `MCP_GITBOOK_URL_1..10` | *(empty)* | GitBook docs URLs (app auto-appends `/~gitbook/mcp` when needed) |
 | `MCP_GITBOOK_TOKEN_1..10` | *(empty)* | Optional per-GitBook bearer tokens |
@@ -555,6 +556,7 @@ Enable CoinGecko MCP to give the bot crypto market tools:
 ```env
 MCP_ENABLED=true
 MCP_COINGECKO_ENABLED=true
+MCP_COINGECKO_URL=https://mcp.api.coingecko.com/
 MCP_COINGECKO_API_KEY=
 ```
 
