@@ -11,6 +11,30 @@ import { logger } from "../logger.js";
 const MCP_CONNECT_TIMEOUT_MS = 10_000;
 const MCP_LIST_TOOLS_TIMEOUT_MS = 10_000;
 
+// ── Prompt-injection guardrails ────────────────────────────────────────────────
+// Maximum length (chars) for a single label or tool-name field injected into
+// the system prompt.  Anything longer is silently truncated after sanitization.
+const LABEL_MAX_LEN = 100;
+const TOOL_NAME_MAX_LEN = 64;
+// Hard ceiling for the entire context block injected into the system prompt.
+const BLOCK_MAX_CHARS = 4_000;
+
+/**
+ * Strips all ASCII control characters (0x00–0x1F, 0x7F) — including newlines
+ * and carriage returns that could inject extra prompt lines — then trims
+ * whitespace and truncates to maxLen.
+ * Returns an empty string when the result is blank after sanitization.
+ *
+ * @param {unknown} text
+ * @param {number}  maxLen
+ * @returns {string}
+ */
+function sanitizeField(text, maxLen) {
+  // eslint-disable-next-line no-control-regex
+  const cleaned = String(text ?? "").replace(/[\x00-\x1F\x7F]/g, "").trim();
+  return cleaned.length > maxLen ? cleaned.slice(0, maxLen).trimEnd() : cleaned;
+}
+
 /** @type {Array<{ name: string, client: Client }>} */
 const mcpClients = [];
 
@@ -23,6 +47,60 @@ const mcpClients = [];
  * }>}
  */
 let cachedTools = [];
+
+/**
+ * @param {Array<{name: string, label?: string}>} servers
+ * @param {Array<{_serverName: string, _originalName: string}>} tools
+ * @param {string[]} connectedServerNames
+ * @returns {string}
+ */
+export function buildMcpContextBlock(servers, tools, connectedServerNames) {
+  const connectedSet = new Set(connectedServerNames);
+  const toolNamesByServer = new Map();
+
+  for (const tool of tools) {
+    const sanitizedName = sanitizeField(tool._originalName, TOOL_NAME_MAX_LEN);
+    if (!sanitizedName) continue;
+    const list = toolNamesByServer.get(tool._serverName) ?? [];
+    if (!list.includes(sanitizedName)) {
+      list.push(sanitizedName);
+      toolNamesByServer.set(tool._serverName, list);
+    }
+  }
+
+  const lines = servers
+    .filter((server) => connectedSet.has(server.name))
+    .map((server) => ({
+      name: server.name,
+      label: sanitizeField(server.label ?? "", LABEL_MAX_LEN),
+      tools: toolNamesByServer.get(server.name) ?? [],
+    }))
+    .filter((server) => server.label && server.tools.length > 0)
+    .map(
+      (server) =>
+        `- ${server.name} (${server.label}): use ${server.tools.join(", ")} for specific questions about this topic`
+    );
+
+  if (lines.length === 0) {
+    logger.debug("[mcp] buildMcpContextBlock: no labeled connected servers with tools — skipping context block");
+    return "";
+  }
+
+  const block =
+    "## Available knowledge tools:\n" +
+    `${lines.join("\n")}\n` +
+    "Prefer these tools over guessing for specific factual questions about the topics above.";
+
+  if (block.length > BLOCK_MAX_CHARS) {
+    logger.warn(
+      `[mcp] buildMcpContextBlock: context block too large (${block.length} chars > ${BLOCK_MAX_CHARS} limit) — truncating`
+    );
+    return block.slice(0, BLOCK_MAX_CHARS);
+  }
+
+  logger.debug(`[mcp] buildMcpContextBlock: ${lines.length} server(s) included, block is ${block.length} chars`);
+  return block;
+}
 
 async function withTimeout(promise, ms, label) {
   let timeoutId;
@@ -126,6 +204,30 @@ export async function initMcp() {
 
 export function getMcpTools() {
   return cachedTools;
+}
+
+export function getMcpContextBlock() {
+  return buildMcpContextBlock(
+    config.mcp.servers,
+    cachedTools,
+    mcpClients.map((client) => client.name)
+  );
+}
+
+/**
+ * Fail-open wrapper around getMcpContextBlock().
+ * Returns an empty string (rather than propagating an exception) when context
+ * assembly fails unexpectedly, so prompt construction is never blocked by an
+ * MCP runtime error.
+ * @returns {string}
+ */
+export function safeGetMcpContextBlock() {
+  try {
+    return getMcpContextBlock();
+  } catch (err) {
+    logger.warn(`[mcp] getMcpContextBlock failed — falling back to empty context: ${err.message}`);
+    return "";
+  }
 }
 
 /**
