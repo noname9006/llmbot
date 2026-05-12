@@ -6,6 +6,7 @@ import { llamaChat } from "../services/llamaService.js";
 import { llamaWithTools } from "../services/toolCallService.js";
 import { isLocalAvailable } from "../services/localAvailabilityService.js";
 import { ensureLocalModel } from "../services/agentService.js";
+import { getMcpContextBlock } from "../services/mcpService.js";
 import { search } from "../services/searchService.js";
 import { isCommand, handleCommand } from "./commandHandler.js";
 import { createRateLimiter, createSemaphore } from "../utils/rateLimiter.js";
@@ -154,7 +155,10 @@ export async function onRemoteMessage(message, remoteClient, localClient) {
     logger.debug(`[${greetReqId}] [${message.author.tag}] mentioned bot with no text — generating greeting`);
     try {
       const greetMessages = [
-        { role: "system", content: resolveDynamicPrompt(config.llm.systemPromptRemote) },
+        {
+          role: "system",
+          content: resolveDynamicPrompt(config.llm.systemPromptRemote, getMcpContextBlock()),
+        },
         {
           role: "user",
           content:

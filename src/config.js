@@ -135,11 +135,14 @@ function buildSystemPrompt(raw) {
  * Resolves runtime placeholders in a system prompt template.
  * Called per-request so values like the current date are always fresh.
  * @param {string} template
+ * @param {string} [appendBlock]
  * @returns {string}
  */
-export function resolveDynamicPrompt(template) {
+export function resolveDynamicPrompt(template, appendBlock = "") {
   const date = new Date().toISOString().slice(0, 10); // e.g. "2026-05-05"
-  return template.replaceAll("{{CURRENT_DATE}}", date);
+  const resolved = template.replaceAll("{{CURRENT_DATE}}", date);
+  const appendedBlock = String(appendBlock ?? "").trim();
+  return appendedBlock ? `${resolved}\n\n${appendedBlock}` : resolved;
 }
 
 // ── Pre-computed fallbacks used by per-model config fields ───────────────────
@@ -252,17 +255,19 @@ function normalizeGitBookMcpUrl(rawUrl, sourceEnvKey) {
 }
 
 function buildMcpServers() {
-  /** @type {Array<{name: string, url: string, transport: "streamable-http"|"sse", headers?: Record<string, string>}>} */
+  /** @type {Array<{name: string, url: string, transport: "streamable-http"|"sse", label?: string, headers?: Record<string, string>}>} */
   const servers = [];
   const seenNames = new Set();
 
   if (optional("MCP_COINGECKO_ENABLED", "false") === "true") {
     const cgApiKey = optional("MCP_COINGECKO_API_KEY", "").trim();
     const cgUrl = optional("MCP_COINGECKO_URL", "https://mcp.api.coingecko.com/").trim();
+    const cgLabel = optional("MCP_COINGECKO_LABEL", "crypto prices and market data").trim();
     pushUniqueMcpServer(servers, seenNames, {
       name: "coingecko",
       url: cgUrl,
       transport: "streamable-http",
+      label: cgLabel,
       ...(cgApiKey ? { headers: { "x-cg-pro-api-key": cgApiKey } } : {}),
     });
   }
@@ -279,10 +284,12 @@ function buildMcpServers() {
       hasNumberedGitbookUrl = true;
 
       const token = optional(`MCP_GITBOOK_TOKEN_${i}`, "").trim() || sharedGitbookToken;
+      const label = optional(`MCP_GITBOOK_LABEL_${i}`, "").trim();
       pushUniqueMcpServer(servers, seenNames, {
         name: `gitbook-${i}`,
         url: normalizeGitBookMcpUrl(gitbookUrlRaw, envKey),
         transport: gitbookTransport,
+        label,
         ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
       });
     }
@@ -297,6 +304,7 @@ function buildMcpServers() {
         name: "gitbook-1",
         url: normalizeGitBookMcpUrl(gitbookUrlLegacy, "MCP_GITBOOK_URL"),
         transport: gitbookTransport,
+        label: optional("MCP_GITBOOK_LABEL_1", "").trim(),
         ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
       });
     }
@@ -308,10 +316,12 @@ function buildMcpServers() {
     if (!name || !url) continue;
 
     const apiKey = optional(`MCP_SERVER_${i}_API_KEY`, "").trim();
+    const label = optional(`MCP_SERVER_${i}_LABEL`, "").trim();
     pushUniqueMcpServer(servers, seenNames, {
       name,
       url,
       transport: normalizeMcpTransport(optional(`MCP_SERVER_${i}_TRANSPORT`, "streamable-http")),
+      label,
       ...(apiKey ? { headers: { "x-api-key": apiKey } } : {}),
     });
   }

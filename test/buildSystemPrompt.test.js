@@ -146,9 +146,11 @@ describe("buildSystemPrompt()", () => {
 // We re-implement the function using the same logic as config.js so that we
 // can unit-test it without loading the full module tree.
 
-function resolveDynamicPromptWith(template) {
+function resolveDynamicPromptWith(template, appendBlock = "") {
   const date = new Date().toISOString().slice(0, 10);
-  return template.replaceAll("{{CURRENT_DATE}}", date);
+  const resolved = template.replaceAll("{{CURRENT_DATE}}", date);
+  const block = String(appendBlock ?? "").trim();
+  return block ? `${resolved}\n\n${block}` : resolved;
 }
 
 describe("resolveDynamicPrompt()", () => {
@@ -172,6 +174,15 @@ describe("resolveDynamicPrompt()", () => {
   test("date matches YYYY-MM-DD format", () => {
     const result = resolveDynamicPromptWith("{{CURRENT_DATE}}");
     assert.match(result, /^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  test("appends MCP context block with one blank line separator", () => {
+    const result = resolveDynamicPromptWith("System prompt", "## Available knowledge tools:\n- x");
+    assert.equal(result, "System prompt\n\n## Available knowledge tools:\n- x");
+  });
+
+  test("does not append block when appendBlock is empty/whitespace", () => {
+    assert.equal(resolveDynamicPromptWith("System prompt", "   "), "System prompt");
   });
 });
 

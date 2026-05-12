@@ -34,6 +34,7 @@ describe("config.mcp GitBook server building", () => {
   test("numbered GitBook URLs build multiple gitbook-N servers", async () => {
     process.env.MCP_GITBOOK_URL_1 = "https://docs.botanixlabs.com/botanix/";
     process.env.MCP_GITBOOK_URL_2 = "https://docs.example.com/my-project/";
+    process.env.MCP_GITBOOK_LABEL_1 = "Botanix";
     const { config } = await loadConfigFresh();
 
     assert.equal(config.mcp.servers.length, 2);
@@ -47,6 +48,10 @@ describe("config.mcp GitBook server building", () => {
         "https://docs.botanixlabs.com/botanix/~gitbook/mcp",
         "https://docs.example.com/my-project/~gitbook/mcp",
       ]
+    );
+    assert.deepEqual(
+      config.mcp.servers.map((s) => s.label),
+      ["Botanix", ""]
     );
   });
 
@@ -74,5 +79,12 @@ describe("config.mcp GitBook server building", () => {
 
     assert.equal(config.mcp.servers[0].headers.Authorization, "Bearer shared-token");
     assert.equal(config.mcp.servers[1].headers.Authorization, "Bearer token-two");
+  });
+
+  test("legacy MCP_GITBOOK_URL uses MCP_GITBOOK_LABEL_1", async () => {
+    process.env.MCP_GITBOOK_URL = "https://docs.example.com/my-space/";
+    process.env.MCP_GITBOOK_LABEL_1 = "Project Docs";
+    const { config } = await loadConfigFresh();
+    assert.equal(config.mcp.servers[0].label, "Project Docs");
   });
 });

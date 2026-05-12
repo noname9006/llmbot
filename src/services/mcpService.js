@@ -24,6 +24,46 @@ const mcpClients = [];
  */
 let cachedTools = [];
 
+/**
+ * @param {Array<{name: string, label?: string}>} servers
+ * @param {Array<{_serverName: string, _originalName: string}>} tools
+ * @param {string[]} connectedServerNames
+ * @returns {string}
+ */
+export function buildMcpContextBlock(servers, tools, connectedServerNames) {
+  const connectedSet = new Set(connectedServerNames);
+  const toolNamesByServer = new Map();
+
+  for (const tool of tools) {
+    const list = toolNamesByServer.get(tool._serverName) ?? [];
+    if (!list.includes(tool._originalName)) {
+      list.push(tool._originalName);
+      toolNamesByServer.set(tool._serverName, list);
+    }
+  }
+
+  const lines = servers
+    .filter((server) => connectedSet.has(server.name))
+    .map((server) => ({
+      name: server.name,
+      label: String(server.label ?? "").trim(),
+      tools: toolNamesByServer.get(server.name) ?? [],
+    }))
+    .filter((server) => server.label && server.tools.length > 0)
+    .map(
+      (server) =>
+        `- ${server.name} (${server.label}): use ${server.tools.join(", ")} for specific questions about ${server.label}`
+    );
+
+  if (lines.length === 0) return "";
+
+  return (
+    "## Available knowledge tools:\n" +
+    `${lines.join("\n")}\n` +
+    "Prefer these tools over guessing for specific factual questions about the topics above."
+  );
+}
+
 async function withTimeout(promise, ms, label) {
   let timeoutId;
   try {
@@ -126,6 +166,14 @@ export async function initMcp() {
 
 export function getMcpTools() {
   return cachedTools;
+}
+
+export function getMcpContextBlock() {
+  return buildMcpContextBlock(
+    config.mcp.servers,
+    cachedTools,
+    mcpClients.map((client) => client.name)
+  );
 }
 
 /**

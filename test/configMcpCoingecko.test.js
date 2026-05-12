@@ -28,6 +28,7 @@ describe("config.mcp CoinGecko server building", () => {
     assert.equal(config.mcp.servers.length, 1);
     assert.equal(config.mcp.servers[0].name, "coingecko");
     assert.equal(config.mcp.servers[0].url, "https://mcp.api.coingecko.com/");
+    assert.equal(config.mcp.servers[0].label, "crypto prices and market data");
   });
 
   test("uses custom URL when MCP_COINGECKO_URL is set", async () => {
@@ -40,6 +41,12 @@ describe("config.mcp CoinGecko server building", () => {
     process.env.MCP_COINGECKO_URL = "  https://custom-endpoint.example.com/  ";
     const { config } = await loadConfigFresh();
     assert.equal(config.mcp.servers[0].url, "https://custom-endpoint.example.com/");
+  });
+
+  test("uses custom MCP_COINGECKO_LABEL when set", async () => {
+    process.env.MCP_COINGECKO_LABEL = "market cap and token stats";
+    const { config } = await loadConfigFresh();
+    assert.equal(config.mcp.servers[0].label, "market cap and token stats");
   });
 
   test("does not set headers when MCP_COINGECKO_API_KEY is empty", async () => {
