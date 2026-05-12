@@ -42,7 +42,7 @@ describe("buildMcpContextBlock()", () => {
     assert.match(block, /## Available knowledge tools:/);
     assert.match(
       block,
-      /- gitbook-1 \(Botanix\): use searchDocumentation, getPage for specific questions about Botanix/
+      /- gitbook-1 \(Botanix\): use searchDocumentation, getPage for specific questions about this topic/
     );
     assert.doesNotMatch(block, /coingecko/);
     assert.match(

@@ -52,7 +52,7 @@ export function buildMcpContextBlock(servers, tools, connectedServerNames) {
     .filter((server) => server.label && server.tools.length > 0)
     .map(
       (server) =>
-        `- ${server.name} (${server.label}): use ${server.tools.join(", ")} for specific questions about ${server.label}`
+        `- ${server.name} (${server.label}): use ${server.tools.join(", ")} for specific questions about this topic`
     );
 
   if (lines.length === 0) return "";
