@@ -1,6 +1,6 @@
 import { config, resolveDynamicPrompt } from "../config.js";
 import { logger } from "../logger.js";
-import { getMcpContextBlock } from "./mcpService.js";
+import { safeGetMcpContextBlock } from "./mcpService.js";
 
 // Histories inactive for longer than this are evicted by cleanup()
 const HISTORY_TTL_MS = 24 * 60 * 60_000; // 24 hours
@@ -67,7 +67,7 @@ class HistoryService {
     this.#touch(userId);
     const history = this.#store.get(userId) ?? [];
     const messages = [
-      { role: "system", content: resolveDynamicPrompt(systemPrompt, getMcpContextBlock()) },
+      { role: "system", content: resolveDynamicPrompt(systemPrompt, safeGetMcpContextBlock()) },
       ...history,
     ];
     if (maxInputTokens <= 0) return messages;

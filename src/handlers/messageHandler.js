@@ -6,7 +6,7 @@ import { llamaChat } from "../services/llamaService.js";
 import { llamaWithTools } from "../services/toolCallService.js";
 import { isLocalAvailable } from "../services/localAvailabilityService.js";
 import { ensureLocalModel } from "../services/agentService.js";
-import { getMcpContextBlock } from "../services/mcpService.js";
+import { safeGetMcpContextBlock } from "../services/mcpService.js";
 import { search } from "../services/searchService.js";
 import { isCommand, handleCommand } from "./commandHandler.js";
 import { createRateLimiter, createSemaphore } from "../utils/rateLimiter.js";
@@ -157,7 +157,7 @@ export async function onRemoteMessage(message, remoteClient, localClient) {
       const greetMessages = [
         {
           role: "system",
-          content: resolveDynamicPrompt(config.llm.systemPromptRemote, getMcpContextBlock()),
+          content: resolveDynamicPrompt(config.llm.systemPromptRemote, safeGetMcpContextBlock()),
         },
         {
           role: "user",
