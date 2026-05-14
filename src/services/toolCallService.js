@@ -6,6 +6,23 @@ import { llamaChatCompletion } from "./llamaService.js";
 const MAX_TOOL_ROUNDS = 5;
 const MAX_TOOL_RESULT_CHARS = 8_000;
 
+/** Patterns that indicate the model is narrating a future tool call instead of making one. */
+const STALLING_PATTERNS = [
+  /\b(let me|i('ll| will|'m going to)|gonna|going to|i need to)\s+(check|search|look|find|fetch|query|pull|get)\b/i,
+  /\b(checking|searching|looking up|fetching|querying|pulling|running a search)\b/i,
+  /\bhold on\b/i,
+  /\bone (sec|second|moment|min|minute)\b/i,
+  /\b(i gotta|gotta)\b.{0,20}\b(docs|documentation|data|info|search)\b/i,
+  /\bgotta (run|do) the search\b/i,
+  /\blmk when it comes back\b/i,
+  /\bwhen it comes back\b/i,
+];
+
+function looksLikeStalling(content) {
+  if (!content) return false;
+  return STALLING_PATTERNS.some((re) => re.test(content));
+}
+
 function sanitizeToolErrorMessage(err) {
   const msg = err?.message ? String(err.message) : "unknown error";
   return /(token|secret|password|api[_-]?key|authorization|auth|bearer|cookie|session)/i.test(msg)
@@ -58,6 +75,7 @@ export async function llamaWithTools(baseUrl, messages, opts = {}) {
 
   const currentMessages = [...messages];
   const sourceUrls = new Set();
+  let stallingInjected = false;
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const { content, tool_calls } = await llamaChatCompletion(baseUrl, currentMessages, opts, tools);
@@ -65,6 +83,18 @@ export async function llamaWithTools(baseUrl, messages, opts = {}) {
     logger.debug(`[tool-call] round=${round + 1} tool_calls=${tool_calls?.length ?? 0}`);
 
     if (!tool_calls || tool_calls.length === 0) {
+      // If the model emitted a stalling phrase without making a tool call,
+      // inject a reminder once and retry so the tool actually runs.
+      if (!stallingInjected && looksLikeStalling(content)) {
+        logger.debug(`[tool-call] round=${round + 1} stalling detected — injecting tool reminder`);
+        stallingInjected = true;
+        currentMessages.push({ role: "assistant", content: content ?? null });
+        currentMessages.push({
+          role: "user",
+          content: "Please call the appropriate tool now to get the information.",
+        });
+        continue;
+      }
       return appendToolSourcesToFinalResponse(content, sourceUrls);
     }
 
