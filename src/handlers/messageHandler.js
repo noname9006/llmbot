@@ -66,6 +66,8 @@ const SIGNAL_STRIP_RE = /__SEARCH__:[^\n]*/g;
 const ESCALATION_JSON_STRIP_RE = /\{[^{}]*"should_escalate"[^{}]*\}/g;
 // Matches bare __VALE__ token and any trailing text on the same line.
 const VALE_TOKEN_STRIP_RE = /__VALE__[^\n]*/g;
+// Matches leaked raw tool-call syntax (including malformed variants) so it never reaches chat.
+const LEAKED_TOOL_CALL_STRIP_RE = /\b[a-z0-9_-]+__[a-z0-9_-]+(?:\{[\s\S]*?\})?<tool_call\|>?/gi;
 
 // User-facing fallback messages for unexpected model signal outputs.
 const MSG_SEARCH_EMPTY_QUERY =
@@ -823,6 +825,7 @@ function stripSignals(text) {
     .replace(SIGNAL_STRIP_RE, "")
     .replace(ESCALATION_JSON_STRIP_RE, "")
     .replace(VALE_TOKEN_STRIP_RE, "")
+    .replace(LEAKED_TOOL_CALL_STRIP_RE, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }

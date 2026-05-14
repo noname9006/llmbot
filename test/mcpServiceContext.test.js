@@ -50,6 +50,41 @@ describe("buildMcpContextBlock()", () => {
       /Prefer these tools over guessing for specific factual questions about the topics above\./
     );
   });
+
+  test("adds explicit CoinGecko-first guidance for crypto price/market queries", async () => {
+    const { buildMcpContextBlock } = await loadMcpServiceFresh();
+    const block = buildMcpContextBlock(
+      [{ name: "coingecko", label: "crypto prices and market data" }],
+      [{ _serverName: "coingecko", _originalName: "getPrice" }],
+      ["coingecko"]
+    );
+    assert.match(
+      block,
+      /ALWAYS use coingecko tools FIRST before considering web search\./
+    );
+  });
+});
+
+describe("formatMcpToolResponse()", () => {
+  test("appends Source lines when MCP result includes resource URLs", async () => {
+    const { formatMcpToolResponse } = await loadMcpServiceFresh();
+    const result = formatMcpToolResponse({
+      content: [
+        { type: "text", text: "Found answer details." },
+        { type: "resource", resource: { uri: "https://docs.example.com/page-a" } },
+      ],
+      structuredContent: {
+        references: [{ sourceUrl: "https://docs.example.com/page-b" }],
+      },
+    });
+    assert.ok(result.text.includes("Found answer details."));
+    assert.ok(result.text.includes("Source: https://docs.example.com/page-a"));
+    assert.ok(result.text.includes("Source: https://docs.example.com/page-b"));
+    assert.deepEqual(
+      result.sources.sort(),
+      ["https://docs.example.com/page-a", "https://docs.example.com/page-b"]
+    );
+  });
 });
 
 describe("buildMcpContextBlock() — input sanitization", () => {

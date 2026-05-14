@@ -193,12 +193,14 @@ describe("resolveDynamicPrompt()", () => {
 const SIGNAL_STRIP_RE = /__SEARCH__:[^\n]*/g;
 const ESCALATION_JSON_STRIP_RE = /\{[^{}]*"should_escalate"[^{}]*\}/g;
 const VALE_TOKEN_STRIP_RE = /__VALE__[^\n]*/g;
+const LEAKED_TOOL_CALL_STRIP_RE = /\b[a-z0-9_-]+__[a-z0-9_-]+(?:\{[\s\S]*?\})?<tool_call\|>?/gi;
 
 function stripSignals(text) {
   return text
     .replace(SIGNAL_STRIP_RE, "")
     .replace(ESCALATION_JSON_STRIP_RE, "")
     .replace(VALE_TOKEN_STRIP_RE, "")
+    .replace(LEAKED_TOOL_CALL_STRIP_RE, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -255,5 +257,17 @@ describe("stripSignals()", () => {
     assert.ok(!result.includes('"should_escalate"'), "JSON stripped");
     assert.ok(!result.includes("__VALE__"), "__VALE__ stripped");
     assert.ok(result.includes("Elaborate on what part"));
+  });
+
+  test("strips leaked malformed tool-call syntax", () => {
+    const input =
+      `Here you go\n` +
+      `gitbook-1__searchDocumentation{query:<|"|>yield strategies botanix<|"|>}<tool_call|>\n` +
+      `Final line`;
+    const result = stripSignals(input);
+    assert.ok(!result.includes("gitbook-1__searchDocumentation"));
+    assert.ok(!result.includes("<tool_call|>"));
+    assert.ok(result.includes("Here you go"));
+    assert.ok(result.includes("Final line"));
   });
 });

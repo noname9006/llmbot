@@ -565,7 +565,7 @@ MCP_MINTLIFY_TOKEN_2=optional_project_token
 
 Behavior:
 - The app creates one server per URL (`mintlify-1`, `mintlify-2`, ...).
-- Friendly docs URLs are auto-normalized to MCP endpoints by appending `/~mcp` when missing.
+- Friendly docs URLs are auto-normalized to MCP endpoints by appending `/mcp` when missing (GitBook still uses `/~gitbook/mcp`).
 - Token resolution: `MCP_MINTLIFY_TOKEN_N` first, then shared `MCP_MINTLIFY_TOKEN`.
 - Legacy fallback still works: `MCP_MINTLIFY_URL` (single server, mapped to `mintlify-1`).
 

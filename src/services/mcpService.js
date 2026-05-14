@@ -86,10 +86,17 @@ export function buildMcpContextBlock(servers, tools, connectedServerNames) {
     return "";
   }
 
+  const hasCoingecko = servers.some(
+    (server) => connectedSet.has(server.name) && server.name === "coingecko" && (toolNamesByServer.get(server.name)?.length ?? 0) > 0
+  );
+
   const block =
     "## Available knowledge tools:\n" +
     `${lines.join("\n")}\n` +
-    "Prefer these tools over guessing for specific factual questions about the topics above.";
+    "Prefer these tools over guessing for specific factual questions about the topics above." +
+    (hasCoingecko
+      ? "\nFor current cryptocurrency prices, market data, or coin information, ALWAYS use coingecko tools FIRST before considering web search."
+      : "");
 
   if (block.length > BLOCK_MAX_CHARS) {
     logger.warn(
@@ -230,10 +237,93 @@ export function safeGetMcpContextBlock() {
   }
 }
 
+function extractUrlsFromText(text) {
+  const matches = String(text ?? "").match(/https?:\/\/[^\s<>"'`)\]}]+/gi);
+  return matches ?? [];
+}
+
+function addHttpUrl(urls, value) {
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) return;
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+      urls.add(parsed.toString());
+    }
+  } catch {
+    // ignore invalid URLs
+  }
+}
+
+function extractUrlsFromObject(value, urls, depth = 0) {
+  if (depth > 6 || value == null) return;
+  if (Array.isArray(value)) {
+    for (const item of value) extractUrlsFromObject(item, urls, depth + 1);
+    return;
+  }
+  if (typeof value !== "object") return;
+
+  for (const [key, child] of Object.entries(value)) {
+    if (typeof child === "string" && /(uri|url|href|source)/i.test(key)) {
+      addHttpUrl(urls, child);
+      continue;
+    }
+    extractUrlsFromObject(child, urls, depth + 1);
+  }
+}
+
+/**
+ * @param {{content?: Array<any>, structuredContent?: any}} result
+ * @returns {string[]}
+ */
+export function extractMcpSourceUrls(result) {
+  const urls = new Set();
+  const content = Array.isArray(result?.content) ? result.content : [];
+
+  for (const item of content) {
+    if (item?.type === "resource" && item.resource && typeof item.resource === "object") {
+      addHttpUrl(urls, item.resource.uri);
+      addHttpUrl(urls, item.resource.url);
+      extractUrlsFromObject(item.resource, urls);
+    }
+    if (item?.type === "text" && typeof item.text === "string") {
+      for (const url of extractUrlsFromText(item.text)) {
+        addHttpUrl(urls, url);
+      }
+    }
+  }
+
+  extractUrlsFromObject(result?.structuredContent, urls);
+  return [...urls];
+}
+
+function appendSourceLines(text, sources) {
+  if (!Array.isArray(sources) || sources.length === 0) {
+    return text;
+  }
+  return `${text}\n\n${sources.map((url) => `Source: ${url}`).join("\n")}`.trim();
+}
+
+/**
+ * @param {{content?: Array<any>, structuredContent?: any}} result
+ * @returns {{ text: string, sources: string[] }}
+ */
+export function formatMcpToolResponse(result) {
+  const text = (result?.content ?? [])
+    .map((item) => {
+      if (item.type === "text") return item.text;
+      if (item.type === "resource") return JSON.stringify(item.resource);
+      return JSON.stringify(item);
+    })
+    .join("\n");
+  const sources = extractMcpSourceUrls(result);
+  return { text: appendSourceLines(text, sources), sources };
+}
+
 /**
  * @param {string} prefixedName
  * @param {object} args
- * @returns {Promise<string>}
+ * @returns {Promise<{ text: string, sources: string[] }>}
  */
 export async function callMcpTool(prefixedName, args) {
   const toolEntry = cachedTools.find((t) => t.function.name === prefixedName);
@@ -254,17 +344,12 @@ export async function callMcpTool(prefixedName, args) {
     name: toolEntry._originalName,
     arguments: args,
   });
-
-  const text = (result.content ?? [])
-    .map((item) => {
-      if (item.type === "text") return item.text;
-      if (item.type === "resource") return JSON.stringify(item.resource);
-      return JSON.stringify(item);
-    })
-    .join("\n");
-
-  logger.debug(`[mcp] Tool ${toolEntry._originalName} returned ${text.length} chars`);
-  return text;
+  const formatted = formatMcpToolResponse(result);
+  logger.debug(
+    `[mcp] Tool ${toolEntry._originalName} returned ${formatted.text.length} chars` +
+    (formatted.sources.length > 0 ? ` (${formatted.sources.length} source url(s))` : "")
+  );
+  return formatted;
 }
 
 export async function shutdownMcp() {
