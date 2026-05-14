@@ -18,6 +18,9 @@ const LABEL_MAX_LEN = 100;
 const TOOL_NAME_MAX_LEN = 64;
 // Hard ceiling for the entire context block injected into the system prompt.
 const BLOCK_MAX_CHARS = 4_000;
+const MAX_URL_EXTRACTION_DEPTH = 6;
+const URL_FIELD_KEY_RE = /(uri|url|href|source)/i;
+const TRAILING_URL_PUNCTUATION_RE = /[),.;:!?]+$/;
 
 /**
  * Strips all ASCII control characters (0x00–0x1F, 0x7F) — including newlines
@@ -86,9 +89,12 @@ export function buildMcpContextBlock(servers, tools, connectedServerNames) {
     return "";
   }
 
-  const hasCoingecko = servers.some(
-    (server) => connectedSet.has(server.name) && server.name === "coingecko" && (toolNamesByServer.get(server.name)?.length ?? 0) > 0
-  );
+  const hasCoingecko = servers.some((server) => {
+    const isConnected = connectedSet.has(server.name);
+    const isCoingecko = server.name === "coingecko";
+    const hasTools = (toolNamesByServer.get(server.name)?.length ?? 0) > 0;
+    return isConnected && isCoingecko && hasTools;
+  });
 
   const block =
     "## Available knowledge tools:\n" +
@@ -238,12 +244,12 @@ export function safeGetMcpContextBlock() {
 }
 
 function extractUrlsFromText(text) {
-  const matches = String(text ?? "").match(/https?:\/\/[^\s<>"'`)\]}]+/gi);
+  const matches = String(text ?? "").match(/https?:\/\/[^\s<>"'`}\]]+/gi);
   return matches ?? [];
 }
 
 function addHttpUrl(urls, value) {
-  const trimmed = String(value ?? "").trim();
+  const trimmed = String(value ?? "").trim().replace(TRAILING_URL_PUNCTUATION_RE, "");
   if (!trimmed) return;
   try {
     const parsed = new URL(trimmed);
@@ -256,7 +262,7 @@ function addHttpUrl(urls, value) {
 }
 
 function extractUrlsFromObject(value, urls, depth = 0) {
-  if (depth > 6 || value == null) return;
+  if (depth > MAX_URL_EXTRACTION_DEPTH || value == null) return;
   if (Array.isArray(value)) {
     for (const item of value) extractUrlsFromObject(item, urls, depth + 1);
     return;
@@ -264,7 +270,7 @@ function extractUrlsFromObject(value, urls, depth = 0) {
   if (typeof value !== "object") return;
 
   for (const [key, child] of Object.entries(value)) {
-    if (typeof child === "string" && /(uri|url|href|source)/i.test(key)) {
+    if (typeof child === "string" && URL_FIELD_KEY_RE.test(key)) {
       addHttpUrl(urls, child);
       continue;
     }
@@ -298,10 +304,11 @@ export function extractMcpSourceUrls(result) {
 }
 
 function appendSourceLines(text, sources) {
+  const baseText = typeof text === "string" ? text : "";
   if (!Array.isArray(sources) || sources.length === 0) {
-    return text;
+    return baseText;
   }
-  return `${text}\n\n${sources.map((url) => `Source: ${url}`).join("\n")}`.trim();
+  return `${baseText}\n\n${sources.map((url) => `Source: ${url}`).join("\n")}`.trim();
 }
 
 /**

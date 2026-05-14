@@ -270,4 +270,9 @@ describe("stripSignals()", () => {
     assert.ok(result.includes("Here you go"));
     assert.ok(result.includes("Final line"));
   });
+
+  test("does not strip normal text containing double underscores and braces", () => {
+    const input = "Use my_server__helper{name} in examples, but keep this sentence.";
+    assert.equal(stripSignals(input), input);
+  });
 });

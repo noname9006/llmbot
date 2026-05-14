@@ -30,7 +30,11 @@ function normalizeToolResult(toolName, value) {
 function appendToolSourcesToFinalResponse(content, sourceUrls) {
   if (sourceUrls.size === 0) return content ?? "";
   const answer = content ?? "";
-  const missingSources = [...sourceUrls].filter((url) => !answer.includes(url));
+  const missingSources = [...sourceUrls].filter((url) => {
+    const escapedUrl = url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const sourceLineRe = new RegExp(`^Source:\\s*${escapedUrl}$`, "m");
+    return !sourceLineRe.test(answer);
+  });
   if (missingSources.length === 0) return answer;
   const sourceLines = missingSources.map((url) => `Source: ${url}`).join("\n");
   return answer.trim()
@@ -76,11 +80,11 @@ export async function llamaWithTools(baseUrl, messages, opts = {}) {
         const args = typeof tc.function.arguments === "string"
           ? JSON.parse(tc.function.arguments)
           : (tc.function.arguments ?? {});
-        const toolResponse = await callMcpTool(tc.function.name, args);
-        for (const sourceUrl of toolResponse.sources ?? []) {
+        const mcpToolResponse = await callMcpTool(tc.function.name, args);
+        for (const sourceUrl of mcpToolResponse.sources ?? []) {
           sourceUrls.add(sourceUrl);
         }
-        toolResult = normalizeToolResult(tc.function.name, toolResponse.text);
+        toolResult = normalizeToolResult(tc.function.name, mcpToolResponse.text);
       } catch (err) {
         const safeMessage = sanitizeToolErrorMessage(err);
         logger.warn(`[tool-call] Tool ${tc.function.name} failed: ${safeMessage}`);
