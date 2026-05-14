@@ -549,6 +549,26 @@ Behavior:
 - Token resolution: `MCP_GITBOOK_TOKEN_N` first, then shared `MCP_GITBOOK_TOKEN`.
 - Legacy fallback still works: `MCP_GITBOOK_URL` (single server, mapped to `gitbook-1`).
 
+### Mintlify MCP (documentation lookup)
+
+Use Mintlify MCP when you want the bot to answer from Mintlify-hosted docs:
+
+```env
+MCP_ENABLED=true
+MCP_MINTLIFY_ENABLED=true
+MCP_MINTLIFY_URL_1=https://docs.example.com/
+MCP_MINTLIFY_URL_2=https://docs.another.com/
+MCP_MINTLIFY_TRANSPORT=streamable-http
+MCP_MINTLIFY_TOKEN=
+MCP_MINTLIFY_TOKEN_2=optional_project_token
+```
+
+Behavior:
+- The app creates one server per URL (`mintlify-1`, `mintlify-2`, ...).
+- Friendly docs URLs are auto-normalized to MCP endpoints by appending `/~mcp` when missing.
+- Token resolution: `MCP_MINTLIFY_TOKEN_N` first, then shared `MCP_MINTLIFY_TOKEN`.
+- Legacy fallback still works: `MCP_MINTLIFY_URL` (single server, mapped to `mintlify-1`).
+
 ### CoinGecko MCP
 
 Enable CoinGecko MCP to give the bot crypto market tools:

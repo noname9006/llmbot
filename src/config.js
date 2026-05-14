@@ -254,6 +254,34 @@ function normalizeGitBookMcpUrl(rawUrl, sourceEnvKey) {
   }
 }
 
+function normalizeMintlifyMcpUrl(rawUrl, sourceEnvKey) {
+  const trimmed = String(rawUrl ?? "").trim();
+  if (!trimmed) return "";
+
+  try {
+    const parsed = new URL(trimmed);
+    const path = parsed.pathname.replace(/\/+$/g, "");
+    if (/\/~mcp$/i.test(path)) {
+      parsed.pathname = path;
+      return parsed.toString();
+    }
+
+    parsed.pathname = `${path}/~mcp`;
+    const normalized = parsed.toString();
+    logConfigDebug(`[mcp] normalized ${sourceEnvKey}: "${trimmed}" -> "${normalized}"`);
+    return normalized;
+  } catch (err) {
+    logConfigDebug(`[mcp] URL parsing failed for ${sourceEnvKey}: "${trimmed}" (${err.message})`);
+    if (/\/~mcp\/?$/i.test(trimmed)) {
+      return trimmed.replace(/\/+$/g, "");
+    }
+
+    const normalized = `${trimmed.replace(/\/+$/g, "")}/~mcp`;
+    logConfigDebug(`[mcp] normalized ${sourceEnvKey}: "${trimmed}" -> "${normalized}"`);
+    return normalized;
+  }
+}
+
 function buildMcpServers() {
   /** @type {Array<{name: string, url: string, transport: "streamable-http"|"sse", label?: string, headers?: Record<string, string>}>} */
   const servers = [];
@@ -305,6 +333,44 @@ function buildMcpServers() {
         url: normalizeGitBookMcpUrl(gitbookUrlLegacy, "MCP_GITBOOK_URL"),
         transport: gitbookTransport,
         label: optional("MCP_GITBOOK_LABEL_1", "").trim(),
+        ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
+      });
+    }
+  }
+
+  if (optional("MCP_MINTLIFY_ENABLED", "false") === "true") {
+    const mintlifyTransport = normalizeMcpTransport(optional("MCP_MINTLIFY_TRANSPORT", "streamable-http"));
+    const sharedMintlifyToken = optional("MCP_MINTLIFY_TOKEN", "").trim();
+    let hasNumberedMintlifyUrl = false;
+
+    for (let i = 1; i <= 10; i++) {
+      const envKey = `MCP_MINTLIFY_URL_${i}`;
+      const mintlifyUrlRaw = optional(envKey, "").trim();
+      if (!mintlifyUrlRaw) continue;
+      hasNumberedMintlifyUrl = true;
+
+      const token = optional(`MCP_MINTLIFY_TOKEN_${i}`, "").trim() || sharedMintlifyToken;
+      const label = optional(`MCP_MINTLIFY_LABEL_${i}`, "").trim();
+      pushUniqueMcpServer(servers, seenNames, {
+        name: `mintlify-${i}`,
+        url: normalizeMintlifyMcpUrl(mintlifyUrlRaw, envKey),
+        transport: mintlifyTransport,
+        label,
+        ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
+      });
+    }
+
+    if (!hasNumberedMintlifyUrl) {
+      const mintlifyUrlLegacy = optional("MCP_MINTLIFY_URL", "").trim();
+      if (!mintlifyUrlLegacy) {
+        throw new Error("MCP_MINTLIFY_ENABLED=true requires MCP_MINTLIFY_URL_1..10 or legacy MCP_MINTLIFY_URL to be set.");
+      }
+      const token = optional("MCP_MINTLIFY_TOKEN", "").trim();
+      pushUniqueMcpServer(servers, seenNames, {
+        name: "mintlify-1",
+        url: normalizeMintlifyMcpUrl(mintlifyUrlLegacy, "MCP_MINTLIFY_URL"),
+        transport: mintlifyTransport,
+        label: optional("MCP_MINTLIFY_LABEL_1", "").trim(),
         ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
       });
     }
