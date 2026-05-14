@@ -28,7 +28,7 @@ describe("config.mcp Mintlify server building", () => {
     const { config } = await loadConfigFresh();
     assert.equal(config.mcp.servers.length, 1);
     assert.equal(config.mcp.servers[0].name, "mintlify-1");
-    assert.equal(config.mcp.servers[0].url, "https://docs.example.com/my-space/~mcp");
+    assert.equal(config.mcp.servers[0].url, "https://docs.example.com/my-space/mcp");
   });
 
   test("numbered Mintlify URLs build multiple mintlify-N servers", async () => {
@@ -45,8 +45,8 @@ describe("config.mcp Mintlify server building", () => {
     assert.deepEqual(
       config.mcp.servers.map((s) => s.url),
       [
-        "https://docs.botanixlabs.com/~mcp",
-        "https://docs.example.com/my-project/~mcp",
+        "https://docs.botanixlabs.com/mcp",
+        "https://docs.example.com/my-project/mcp",
       ]
     );
     assert.deepEqual(
@@ -56,9 +56,9 @@ describe("config.mcp Mintlify server building", () => {
   });
 
   test("does not append suffix when Mintlify URL already points to MCP endpoint", async () => {
-    process.env.MCP_MINTLIFY_URL_1 = "https://docs.example.com/project/~mcp";
+    process.env.MCP_MINTLIFY_URL_1 = "https://docs.example.com/project/mcp";
     const { config } = await loadConfigFresh();
-    assert.equal(config.mcp.servers[0].url, "https://docs.example.com/project/~mcp");
+    assert.equal(config.mcp.servers[0].url, "https://docs.example.com/project/mcp");
   });
 
   test("appends MCP path before query/hash segments", async () => {
@@ -66,7 +66,7 @@ describe("config.mcp Mintlify server building", () => {
     const { config } = await loadConfigFresh();
     assert.equal(
       config.mcp.servers[0].url,
-      "https://docs.example.com/project/~mcp?tab=api#section"
+      "https://docs.example.com/project/mcp?tab=api#section"
     );
   });
 

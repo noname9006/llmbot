@@ -27,6 +27,21 @@ function normalizeToolResult(toolName, value) {
   );
 }
 
+function appendToolSourcesToFinalResponse(content, sourceUrls) {
+  if (sourceUrls.size === 0) return content ?? "";
+  const answer = content ?? "";
+  const missingSources = [...sourceUrls].filter((url) => {
+    const escapedUrl = url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const sourceLineRe = new RegExp(`^Source:\\s*${escapedUrl}$`, "m");
+    return !sourceLineRe.test(answer);
+  });
+  if (missingSources.length === 0) return answer;
+  const sourceLines = missingSources.map((url) => `Source: ${url}`).join("\n");
+  return answer.trim()
+    ? `${answer.trimEnd()}\n\n${sourceLines}`
+    : sourceLines;
+}
+
 /**
  * @param {string} baseUrl
  * @param {Array<{role: string, content: string}>} messages
@@ -42,6 +57,7 @@ export async function llamaWithTools(baseUrl, messages, opts = {}) {
   }
 
   const currentMessages = [...messages];
+  const sourceUrls = new Set();
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const { content, tool_calls } = await llamaChatCompletion(baseUrl, currentMessages, opts, tools);
@@ -49,7 +65,7 @@ export async function llamaWithTools(baseUrl, messages, opts = {}) {
     logger.debug(`[tool-call] round=${round + 1} tool_calls=${tool_calls?.length ?? 0}`);
 
     if (!tool_calls || tool_calls.length === 0) {
-      return content ?? "";
+      return appendToolSourcesToFinalResponse(content, sourceUrls);
     }
 
     currentMessages.push({
@@ -64,7 +80,11 @@ export async function llamaWithTools(baseUrl, messages, opts = {}) {
         const args = typeof tc.function.arguments === "string"
           ? JSON.parse(tc.function.arguments)
           : (tc.function.arguments ?? {});
-        toolResult = normalizeToolResult(tc.function.name, await callMcpTool(tc.function.name, args));
+        const mcpToolResponse = await callMcpTool(tc.function.name, args);
+        for (const sourceUrl of mcpToolResponse.sources ?? []) {
+          sourceUrls.add(sourceUrl);
+        }
+        toolResult = normalizeToolResult(tc.function.name, mcpToolResponse.text);
       } catch (err) {
         const safeMessage = sanitizeToolErrorMessage(err);
         logger.warn(`[tool-call] Tool ${tc.function.name} failed: ${safeMessage}`);
@@ -84,5 +104,5 @@ export async function llamaWithTools(baseUrl, messages, opts = {}) {
 
   logger.warn(`[tool-call] Exceeded MAX_TOOL_ROUNDS (${MAX_TOOL_ROUNDS}) — calling without tools`);
   const { content } = await llamaChatCompletion(baseUrl, currentMessages, opts, []);
-  return content ?? "";
+  return appendToolSourcesToFinalResponse(content, sourceUrls);
 }

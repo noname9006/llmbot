@@ -261,22 +261,22 @@ function normalizeMintlifyMcpUrl(rawUrl, sourceEnvKey) {
   try {
     const parsed = new URL(trimmed);
     const path = parsed.pathname.replace(/\/+$/g, "");
-    if (/\/~mcp$/i.test(path)) {
+    if (/\/mcp$/i.test(path)) {
       parsed.pathname = path;
       return parsed.toString();
     }
 
-    parsed.pathname = `${path}/~mcp`;
+    parsed.pathname = `${path}/mcp`;
     const normalized = parsed.toString();
     logConfigDebug(`[mcp] normalized ${sourceEnvKey}: "${trimmed}" -> "${normalized}"`);
     return normalized;
   } catch (err) {
     logConfigDebug(`[mcp] URL parsing failed for ${sourceEnvKey}: "${trimmed}" (${err.message})`);
-    if (/\/~mcp\/?$/i.test(trimmed)) {
+    if (/\/mcp\/?$/i.test(trimmed)) {
       return trimmed.replace(/\/+$/g, "");
     }
 
-    const normalized = `${trimmed.replace(/\/+$/g, "")}/~mcp`;
+    const normalized = `${trimmed.replace(/\/+$/g, "")}/mcp`;
     logConfigDebug(`[mcp] normalized ${sourceEnvKey}: "${trimmed}" -> "${normalized}"`);
     return normalized;
   }
