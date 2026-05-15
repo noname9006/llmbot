@@ -8,6 +8,7 @@ const MAX_TOOL_RESULT_CHARS = 8_000;
 const MAX_EVIDENCE_DEPTH = 6;
 const DOC_SEARCH_TOOL_RE = /(?:^|__)searchDocumentation$/i;
 const DOC_GET_PAGE_TOOL_RE = /(?:^|__)getPage$/i;
+const EVIDENCE_FIELD_KEY_RE = /(title|snippet|summary|content|text|markdown|url|uri|href|path|slug|body|page)/i;
 const DOC_NO_RESULTS_MESSAGE =
   "I couldn't retrieve any documentation results from the docs service right now, so I can't confirm any docs findings or links.";
 const DOC_QUERY_STOPWORDS = new Set([
@@ -159,7 +160,7 @@ function hasConcreteEvidence(value, depth = 0) {
   if (typeof value !== "object") return true;
 
   for (const [key, child] of Object.entries(value)) {
-    if (/(title|snippet|summary|content|text|markdown|url|uri|href|path|slug|body|page)/i.test(key)) {
+    if (EVIDENCE_FIELD_KEY_RE.test(key)) {
       if (hasConcreteEvidence(child, depth + 1)) return true;
     }
   }

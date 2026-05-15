@@ -116,7 +116,7 @@ describe("normalizeMcpToolResponse()", () => {
     assert.equal(result.error, null);
     assert.equal(result.data.content[0].text, "stBTC page");
     assert.equal(result.data.structuredContent.hits[0].path, "/stbtc/staking");
-    assert.ok(result.sources.includes("https://docs.example.com/stbtc/staking"));
+    assert.deepEqual(result.sources, ["https://docs.example.com/stbtc/staking"]);
   });
 
   test("returns parse_error when the raw payload cannot be serialized", async () => {

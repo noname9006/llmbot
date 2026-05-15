@@ -177,7 +177,7 @@ function safeJsonStringify(value) {
   const seen = new WeakSet();
   return JSON.stringify(value, (key, currentValue) => {
     if (typeof currentValue === "bigint") {
-      return currentValue.toString();
+      return String(currentValue);
     }
     if (typeof currentValue === "object" && currentValue !== null) {
       if (seen.has(currentValue)) {
