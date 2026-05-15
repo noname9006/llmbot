@@ -67,7 +67,7 @@ describe("executeToolCallWithFallback()", () => {
         logger,
         async callMcpTool(toolName, args) {
           calls.push({ toolName, args });
-          if (toolName === "gitbook-2__searchDocumentation" && args.query === "stBTC staking") {
+          if (toolName === "gitbook-2__searchDocumentation" && args.query === "stBTC staking peg") {
             return {
               ok: true,
               empty: false,
@@ -110,7 +110,8 @@ describe("executeToolCallWithFallback()", () => {
     );
 
     assert.equal(calls[0].args.query, "stBTC staking and peg mechanism");
-    assert.ok(calls.some((call) => call.args.query === "stBTC staking"));
+    assert.ok(calls.some((call) => call.args.query === "stBTC staking peg"));
+    assert.ok(!calls.some((call) => call.args.query === "stBTC staking"));
     assert.equal(calls.at(-1).toolName, "gitbook-2__getPage");
     assert.equal(result.grounded, true);
     assert.equal(result.result.tool, "gitbook-2__getPage");
@@ -221,6 +222,61 @@ describe("llamaWithToolsInternal()", () => {
 
     assert.match(response, /I found the stBTC staking docs/);
     assert.match(response, /Source: https:\/\/docs\.example\.com\/stbtc\/staking/);
+  });
+
+  test("appends at most two missing Source lines", async () => {
+    const tools = createDocsTools();
+    let round = 0;
+
+    const response = await llamaWithToolsInternal(
+      "http://llama.test/v1",
+      [{ role: "user", content: "Share docs" }],
+      {},
+      {
+        mcpEnabled: true,
+        getMcpTools: () => tools,
+        logger: createLogger(),
+        async callMcpTool() {
+          return {
+            ok: true,
+            empty: false,
+            data: { title: "stBTC docs" },
+            error: null,
+            tool: "gitbook-2__searchDocumentation",
+            meta: {},
+            sources: [
+              "https://docs.example.com/source-1",
+              "https://docs.example.com/source-2",
+              "https://docs.example.com/source-3",
+            ],
+          };
+        },
+        async llamaChatCompletion() {
+          round += 1;
+          if (round === 1) {
+            return {
+              content: null,
+              tool_calls: [
+                {
+                  id: "tool-1",
+                  function: {
+                    name: "gitbook-2__searchDocumentation",
+                    arguments: JSON.stringify({ query: "stBTC docs" }),
+                  },
+                },
+              ],
+            };
+          }
+          return { content: "Here you go", tool_calls: null };
+        },
+      }
+    );
+
+    const sourceMatches = response.match(/^Source:\s.*$/gm) ?? [];
+    assert.equal(sourceMatches.length, 2);
+    assert.ok(response.includes("Source: https://docs.example.com/source-1"));
+    assert.ok(response.includes("Source: https://docs.example.com/source-2"));
+    assert.ok(!response.includes("Source: https://docs.example.com/source-3"));
   });
 
   test("returns an explicit no-results response when all docs fallbacks are empty", async () => {

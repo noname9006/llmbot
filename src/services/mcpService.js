@@ -105,11 +105,11 @@ export function buildMcpContextBlock(servers, tools, connectedServerNames) {
   const block =
     "## Available knowledge tools:\n" +
     `${lines.join("\n")}\n` +
-    "Prefer these tools over guessing for specific factual questions about the topics above.\n" +
+    "**YOU MUST call these tools FIRST before answering factual questions about the topics above. Do NOT answer from memory.**\n" +
     "Only claim you found tool-backed facts when the tool output includes concrete evidence such as a title, snippet, URL, or page content.\n" +
     "If a tool returns ok=false or empty=true, say that transparently and try another tool/query instead of guessing." +
     (hasCoingecko
-      ? "\nFor current cryptocurrency prices, market data, or coin information, ALWAYS use coingecko tools FIRST before considering web search."
+      ? "\n**For cryptocurrency prices/market data: call coingecko tools IMMEDIATELY. Never answer crypto prices from memory.**"
       : "");
 
   if (block.length > BLOCK_MAX_CHARS) {

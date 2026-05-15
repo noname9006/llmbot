@@ -147,7 +147,8 @@ function appendToolSourcesToFinalResponse(content, sourceUrls) {
     return !sourceLineRe.test(answer);
   });
   if (missingSources.length === 0) return answer;
-  const sourceLines = missingSources.map((url) => `Source: ${url}`).join("\n");
+  const limitedSources = missingSources.slice(0, 2);
+  const sourceLines = limitedSources.map((url) => `Source: ${url}`).join("\n");
   return answer.trim()
     ? `${answer.trimEnd()}\n\n${sourceLines}`
     : sourceLines;
@@ -249,14 +250,6 @@ function buildDocsQueryVariants(query) {
     .filter((token) => token && !DOC_QUERY_STOPWORDS.has(token.toLowerCase()))
     .join(" ");
   add(cleaned);
-
-  const tokens = cleaned.split(/\s+/).filter(Boolean);
-  if (tokens.length > 2) {
-    add(tokens.slice(0, 2).join(" "));
-  }
-  if (tokens.length > 3) {
-    add(tokens.slice(0, 3).join(" "));
-  }
 
   return variants.length > 0 ? variants : [base];
 }

@@ -47,7 +47,7 @@ describe("buildMcpContextBlock()", () => {
     assert.doesNotMatch(block, /coingecko/);
     assert.match(
       block,
-      /Prefer these tools over guessing for specific factual questions about the topics above\./
+      /\*\*YOU MUST call these tools FIRST before answering factual questions about the topics above\. Do NOT answer from memory\.\*\*/
     );
     assert.match(
       block,
@@ -64,7 +64,7 @@ describe("buildMcpContextBlock()", () => {
     );
     assert.match(
       block,
-      /ALWAYS use coingecko tools FIRST before considering web search\./
+      /\*\*For cryptocurrency prices\/market data: call coingecko tools IMMEDIATELY\. Never answer crypto prices from memory\.\*\*/
     );
   });
 });
