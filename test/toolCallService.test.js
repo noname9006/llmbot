@@ -110,8 +110,11 @@ describe("executeToolCallWithFallback()", () => {
     );
 
     assert.equal(calls[0].args.query, "stBTC staking and peg mechanism");
-    assert.ok(calls.some((call) => call.args.query === "stBTC staking peg"));
-    assert.ok(!calls.some((call) => call.args.query === "stBTC staking"));
+    const searchQueries = calls
+      .filter((call) => call.toolName === "gitbook-2__searchDocumentation")
+      .map((call) => call.args.query);
+    assert.deepEqual(searchQueries, ["stBTC staking and peg mechanism", "stBTC staking peg"]);
+    assert.ok(!searchQueries.includes("stBTC staking"));
     assert.equal(calls.at(-1).toolName, "gitbook-2__getPage");
     assert.equal(result.grounded, true);
     assert.equal(result.result.tool, "gitbook-2__getPage");
