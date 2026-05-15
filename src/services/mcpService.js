@@ -358,6 +358,10 @@ export function getMcpTools() {
   return cachedTools;
 }
 
+export function isToolServerAvailable(serverName) {
+  return mcpClients.some((client) => client.name === serverName);
+}
+
 export function getMcpContextBlock() {
   return buildMcpContextBlock(
     config.mcp.servers,

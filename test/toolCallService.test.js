@@ -370,4 +370,116 @@ describe("llamaWithToolsInternal()", () => {
     assert.equal(calls[0].toolName, "gitbook-2__searchDocumentation");
     assert.ok(calls.some((call) => call.toolName === "gitbook-1__searchDocumentation"));
   });
+
+  test("falls back to memory when a docs tool returns an execution error", async () => {
+    const logger = createLogger();
+    const tools = createDocsTools();
+    let round = 0;
+    const messages = [];
+
+    const response = await llamaWithToolsInternal(
+      "http://llama.test/v1",
+      [{ role: "user", content: "what is stBTC?" }],
+      {},
+      {
+        mcpEnabled: true,
+        getMcpTools: () => tools,
+        logger,
+        async callMcpTool(toolName) {
+          return {
+            ok: false,
+            empty: false,
+            data: null,
+            error: "execution_error: connection refused",
+            tool: toolName,
+            meta: {},
+            sources: [],
+          };
+        },
+        async llamaChatCompletion(baseUrl, msgs) {
+          round += 1;
+          messages.push(...msgs);
+          if (round === 1) {
+            return {
+              content: null,
+              tool_calls: [
+                {
+                  id: "tool-1",
+                  function: {
+                    name: "gitbook-2__searchDocumentation",
+                    arguments: JSON.stringify({ query: "stBTC" }),
+                  },
+                },
+              ],
+            };
+          }
+          return {
+            content: "I couldn't reach the docs, but from memory: stBTC is a liquid staking token for Bitcoin.",
+            tool_calls: null,
+          };
+        },
+      }
+    );
+
+    assert.match(response, /stBTC is a liquid staking token/);
+    assert.doesNotMatch(response, /I couldn't retrieve any documentation results/);
+    assert.ok(
+      logger.entries.some((e) => e.message.includes("docs tool execution error detected")),
+      "expected an execution error log entry"
+    );
+    const fallbackMsg = messages.find(
+      (m) => m.role === "user" && m.content?.includes("documentation tool is currently unavailable")
+    );
+    assert.ok(fallbackMsg, "expected a fallback instruction to be injected into messages");
+  });
+
+  test("falls back to memory when callMcpTool throws (server disconnected)", async () => {
+    const logger = createLogger();
+    const tools = createDocsTools();
+    let round = 0;
+    const messages = [];
+
+    const response = await llamaWithToolsInternal(
+      "http://llama.test/v1",
+      [{ role: "user", content: "how does Botanix work?" }],
+      {},
+      {
+        mcpEnabled: true,
+        getMcpTools: () => tools,
+        logger,
+        async callMcpTool() {
+          throw new Error("[mcp] No client for server: gitbook-1");
+        },
+        async llamaChatCompletion(baseUrl, msgs) {
+          round += 1;
+          messages.push(...msgs);
+          if (round === 1) {
+            return {
+              content: null,
+              tool_calls: [
+                {
+                  id: "tool-1",
+                  function: {
+                    name: "gitbook-1__searchDocumentation",
+                    arguments: JSON.stringify({ query: "Botanix" }),
+                  },
+                },
+              ],
+            };
+          }
+          return {
+            content: "Docs unavailable, but from memory: Botanix is Bitcoin DeFi.",
+            tool_calls: null,
+          };
+        },
+      }
+    );
+
+    assert.match(response, /Botanix is Bitcoin DeFi/);
+    assert.doesNotMatch(response, /I couldn't retrieve any documentation results/);
+    const fallbackMsg = messages.find(
+      (m) => m.role === "user" && m.content?.includes("documentation tool is currently unavailable")
+    );
+    assert.ok(fallbackMsg, "expected a fallback instruction to be injected into messages");
+  });
 });

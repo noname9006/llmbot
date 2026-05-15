@@ -250,3 +250,11 @@ describe("safeGetMcpContextBlock()", () => {
     assert.equal(block, "");
   });
 });
+
+describe("isToolServerAvailable()", () => {
+  test("returns false for any server name when no clients are connected", async () => {
+    const { isToolServerAvailable } = await loadMcpServiceFresh();
+    assert.equal(isToolServerAvailable("gitbook-1"), false);
+    assert.equal(isToolServerAvailable("coingecko"), false);
+  });
+});
