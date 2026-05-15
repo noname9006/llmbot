@@ -49,6 +49,10 @@ describe("buildMcpContextBlock()", () => {
       block,
       /Prefer these tools over guessing for specific factual questions about the topics above\./
     );
+    assert.match(
+      block,
+      /Only claim you found tool-backed facts when the tool output includes concrete evidence/
+    );
   });
 
   test("adds explicit CoinGecko-first guidance for crypto price/market queries", async () => {
@@ -87,6 +91,45 @@ describe("formatMcpToolResponse()", () => {
   });
 });
 
+describe("normalizeMcpToolResponse()", () => {
+  test("marks empty string payloads as ok=true, empty=true", async () => {
+    const { normalizeMcpToolResponse } = await loadMcpServiceFresh();
+    const result = normalizeMcpToolResponse("gitbook-2__searchDocumentation", "");
+    assert.equal(result.ok, true);
+    assert.equal(result.empty, true);
+    assert.equal(result.data, null);
+    assert.equal(result.error, null);
+  });
+
+  test("preserves nested content/structuredContent payloads", async () => {
+    const { normalizeMcpToolResponse } = await loadMcpServiceFresh();
+    const result = normalizeMcpToolResponse("gitbook-2__searchDocumentation", {
+      result: {
+        content: [{ type: "text", text: "stBTC page" }],
+        structuredContent: {
+          hits: [{ title: "stBTC staking", path: "/stbtc/staking", url: "https://docs.example.com/stbtc/staking" }],
+        },
+      },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.empty, false);
+    assert.equal(result.error, null);
+    assert.equal(result.data.content[0].text, "stBTC page");
+    assert.equal(result.data.structuredContent.hits[0].path, "/stbtc/staking");
+    assert.deepEqual(result.sources, ["https://docs.example.com/stbtc/staking"]);
+  });
+
+  test("returns parse_error when the raw payload cannot be serialized", async () => {
+    const { normalizeMcpToolResponse } = await loadMcpServiceFresh();
+    const circular = {};
+    circular.self = circular;
+    const result = normalizeMcpToolResponse("gitbook-2__searchDocumentation", circular);
+    assert.equal(result.ok, false);
+    assert.equal(result.empty, false);
+    assert.match(result.error ?? "", /^parse_error:/);
+  });
+});
+
 describe("buildMcpContextBlock() — input sanitization", () => {
   test("strips newlines from labels so they cannot inject extra prompt lines", async () => {
     const { buildMcpContextBlock } = await loadMcpServiceFresh();
@@ -98,8 +141,8 @@ describe("buildMcpContextBlock() — input sanitization", () => {
     // The newline is stripped so the injected text cannot start a new prompt line.
     // The merged result appears inside the server-line parenthetical — harmlessly embedded.
     const blockLines = block.split("\n");
-    // A single-server block has exactly 3 lines: header, server line, footer.
-    assert.equal(blockLines.length, 3, "injected newline must not create extra lines in the block");
+    // A single-server block has exactly 5 lines: header, server line, guidance footer, and two grounding lines.
+    assert.equal(blockLines.length, 5, "injected newline must not create extra lines in the block");
     // The label content (minus the stripped newline) should be on the server line
     assert.ok(blockLines[1].includes("Legit label"), "legitimate part of label must be on the server line");
     // No standalone injected-instruction line
@@ -144,9 +187,9 @@ describe("buildMcpContextBlock() — input sanitization", () => {
       ["srv"]
     );
     // The newline is stripped so the injected suffix cannot start a new prompt line.
-    // A single-server block has exactly 3 lines: header, server line, footer.
+    // A single-server block has exactly 5 lines: header, server line, guidance footer, and two grounding lines.
     const blockLines = block.split("\n");
-    assert.equal(blockLines.length, 3, "injected newline in tool name must not create extra lines");
+    assert.equal(blockLines.length, 5, "injected newline in tool name must not create extra lines");
     // The valid part of the tool name must appear on the server line
     assert.ok(blockLines[1].includes("getPage"), "valid part of tool name must survive on the server line");
     // No standalone injected line

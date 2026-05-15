@@ -2,6 +2,7 @@
  * MCP client service — connects to remote MCP servers (CoinGecko, GitBook, …)
  * and exposes their tools to the LLM via OpenAI tool-calling format.
  */
+import crypto from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
@@ -19,8 +20,13 @@ const TOOL_NAME_MAX_LEN = 64;
 // Hard ceiling for the entire context block injected into the system prompt.
 const BLOCK_MAX_CHARS = 4_000;
 const MAX_URL_EXTRACTION_DEPTH = 6;
+const MAX_TOOL_RESULT_PARSE_DEPTH = 6;
+const TOOL_RESULT_PREVIEW_MAX_CHARS = 160;
 const URL_FIELD_KEY_RE = /(uri|url|href|source)/i;
 const TRAILING_URL_PUNCTUATION_RE = /[),.;:!?]+$/;
+const TOOL_COLLECTION_KEYS = ["items", "results", "pages", "hits", "documents", "entries"];
+const TOOL_WRAPPER_KEYS = ["data", "result", "output", "value"];
+const TOOL_TEXT_KEYS = ["answer", "text", "markdown", "message"];
 
 /**
  * Strips all ASCII control characters (0x00–0x1F, 0x7F) — including newlines
@@ -99,7 +105,9 @@ export function buildMcpContextBlock(servers, tools, connectedServerNames) {
   const block =
     "## Available knowledge tools:\n" +
     `${lines.join("\n")}\n` +
-    "Prefer these tools over guessing for specific factual questions about the topics above." +
+    "Prefer these tools over guessing for specific factual questions about the topics above.\n" +
+    "Only claim you found tool-backed facts when the tool output includes concrete evidence such as a title, snippet, URL, or page content.\n" +
+    "If a tool returns ok=false or empty=true, say that transparently and try another tool/query instead of guessing." +
     (hasCoingecko
       ? "\nFor current cryptocurrency prices, market data, or coin information, ALWAYS use coingecko tools FIRST before considering web search."
       : "");
@@ -145,6 +153,137 @@ function safeArgsPreview(args) {
   } catch {
     return "[unserializable args]";
   }
+}
+
+function hashArgs(args) {
+  try {
+    return crypto
+      .createHash("sha256")
+      .update(JSON.stringify(args ?? {}))
+      .digest("hex")
+      .slice(0, 12);
+  } catch {
+    return "unhashable";
+  }
+}
+
+function sanitizeToolErrorMessage(err) {
+  const msg = err?.message ? String(err.message) : "unknown error";
+  return /(token|secret|password|api[_-]?key|authorization|auth|bearer|cookie|session)/i.test(msg)
+    ? "tool execution failed due to a protected error"
+    : msg;
+}
+
+function safeJsonStringify(value) {
+  const seen = new WeakSet();
+  return JSON.stringify(value, (key, currentValue) => {
+    if (typeof currentValue === "bigint") {
+      return String(currentValue);
+    }
+    if (typeof currentValue === "object" && currentValue !== null) {
+      if (seen.has(currentValue)) {
+        throw new TypeError("Converting circular structure to JSON");
+      }
+      seen.add(currentValue);
+    }
+    return currentValue;
+  });
+}
+
+function sanitizeRawPreview(text) {
+  const compact = String(text ?? "")
+    .replace(/[\x00-\x1F\x7F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(
+      /("(?:token|secret|password|api[_-]?key|authorization|auth|bearer|cookie|session)"\s*:\s*")[^"]+(")/ig,
+      "$1[REDACTED]$2"
+    );
+  return compact.length > TOOL_RESULT_PREVIEW_MAX_CHARS
+    ? `${compact.slice(0, TOOL_RESULT_PREVIEW_MAX_CHARS)}…`
+    : compact;
+}
+
+function isToolValueEmpty(value) {
+  if (value == null) return true;
+  if (typeof value === "string") return value.trim().length === 0;
+  if (Array.isArray(value)) {
+    return value.length === 0 || value.every((item) => isToolValueEmpty(item));
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value);
+    return entries.length === 0 || entries.every(([, child]) => isToolValueEmpty(child));
+  }
+  return false;
+}
+
+function pickToolPayload(value, depth = 0) {
+  if (depth > MAX_TOOL_RESULT_PARSE_DEPTH || value == null) return value;
+  if (typeof value === "string" || Array.isArray(value)) return value;
+  if (typeof value !== "object") return value;
+
+  const hasContent = !isToolValueEmpty(value.content);
+  const hasStructuredContent = !isToolValueEmpty(value.structuredContent);
+  if (hasContent || hasStructuredContent) {
+    const payload = {};
+    if (hasContent) payload.content = value.content;
+    if (hasStructuredContent) payload.structuredContent = value.structuredContent;
+    if (!isToolValueEmpty(value.text)) payload.text = value.text;
+    return payload;
+  }
+
+  for (const key of TOOL_WRAPPER_KEYS) {
+    if (!isToolValueEmpty(value[key])) {
+      return pickToolPayload(value[key], depth + 1);
+    }
+  }
+
+  for (const key of TOOL_COLLECTION_KEYS) {
+    if (!isToolValueEmpty(value[key])) {
+      return pickToolPayload(value[key], depth + 1);
+    }
+  }
+
+  for (const key of TOOL_TEXT_KEYS) {
+    if (!isToolValueEmpty(value[key])) {
+      return value[key];
+    }
+  }
+
+  return value;
+}
+
+function renderToolDataAsText(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => renderToolDataAsText(item)).filter(Boolean).join("\n");
+  }
+  if (typeof value !== "object") return String(value);
+
+  if (!isToolValueEmpty(value.content)) {
+    const content = Array.isArray(value.content)
+      ? value.content.map((item) => {
+        if (typeof item === "string") return item;
+        if (item?.type === "text" && typeof item.text === "string") return item.text;
+        if (item?.type === "resource") return safeJsonStringify(item.resource ?? item);
+        return renderToolDataAsText(item);
+      }).filter(Boolean).join("\n")
+      : renderToolDataAsText(value.content);
+    if (content) return content;
+  }
+
+  for (const key of TOOL_TEXT_KEYS) {
+    if (!isToolValueEmpty(value[key])) {
+      return String(value[key]);
+    }
+  }
+
+  if (!isToolValueEmpty(value.structuredContent)) {
+    return safeJsonStringify(value.structuredContent);
+  }
+
+  return safeJsonStringify(value);
 }
 
 /**
@@ -284,6 +423,12 @@ function extractUrlsFromObject(value, urls, depth = 0) {
  */
 export function extractMcpSourceUrls(result) {
   const urls = new Set();
+  if (typeof result === "string") {
+    for (const url of extractUrlsFromText(result)) {
+      addHttpUrl(urls, url);
+    }
+    return [...urls];
+  }
   const content = Array.isArray(result?.content) ? result.content : [];
 
   for (const item of content) {
@@ -300,6 +445,7 @@ export function extractMcpSourceUrls(result) {
   }
 
   extractUrlsFromObject(result?.structuredContent, urls);
+  extractUrlsFromObject(result, urls);
   return [...urls];
 }
 
@@ -312,27 +458,109 @@ function appendSourceLines(text, sources) {
 }
 
 /**
- * @param {{content?: Array<any>, structuredContent?: any}} result
+ * @param {string} toolName
+ * @param {unknown} rawResult
+ * @returns {{
+ *   ok: boolean,
+ *   empty: boolean,
+ *   data: string|object|Array<any>|null,
+ *   error: string|null,
+ *   tool: string,
+ *   meta: { rawLength: number, parsedLength: number, rawPreview: string },
+ *   sources: string[]
+ * }}
+ */
+export function normalizeMcpToolResponse(toolName, rawResult) {
+  let rawSerialized;
+  try {
+    rawSerialized = safeJsonStringify(rawResult ?? null);
+  } catch (err) {
+    return {
+      ok: false,
+      empty: false,
+      data: null,
+      error: `parse_error: ${sanitizeToolErrorMessage(err)}`,
+      tool: toolName,
+      meta: {
+        rawLength: 0,
+        parsedLength: 0,
+        rawPreview: sanitizeRawPreview(rawResult),
+      },
+      sources: [],
+    };
+  }
+
+  const rawLength = rawSerialized.length;
+  const rawPreview = sanitizeRawPreview(rawSerialized);
+
+  try {
+    const data = pickToolPayload(rawResult);
+    const empty = isToolValueEmpty(data);
+    const parsedLength = empty ? 0 : safeJsonStringify(data).length;
+    return {
+      ok: true,
+      empty,
+      data: empty ? null : data,
+      error: null,
+      tool: toolName,
+      meta: {
+        rawLength,
+        parsedLength,
+        rawPreview,
+      },
+      sources: extractMcpSourceUrls(rawResult),
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      empty: false,
+      data: null,
+      error: `parse_error: ${sanitizeToolErrorMessage(err)}`,
+      tool: toolName,
+      meta: {
+        rawLength,
+        parsedLength: 0,
+        rawPreview,
+      },
+      sources: extractMcpSourceUrls(rawResult),
+    };
+  }
+}
+
+/**
+ * @param {{content?: Array<any>, structuredContent?: any}|string|Array<any>|object|null} result
  * @returns {{ text: string, sources: string[] }}
  */
 export function formatMcpToolResponse(result) {
-  const text = (result?.content ?? [])
-    .map((item) => {
-      if (item.type === "text") return item.text;
-      if (item.type === "resource") return JSON.stringify(item.resource);
-      return JSON.stringify(item);
-    })
-    .join("\n");
-  const sources = extractMcpSourceUrls(result);
-  return { text: appendSourceLines(text, sources), sources };
+  const normalized = normalizeMcpToolResponse("mcp-tool", result);
+  const text = normalized.ok && !normalized.empty
+    ? renderToolDataAsText(normalized.data)
+    : (normalized.error ?? "");
+  return { text: appendSourceLines(text, normalized.sources), sources: normalized.sources };
 }
 
 /**
  * @param {string} prefixedName
  * @param {object} args
- * @returns {Promise<{ text: string, sources: string[] }>}
+ * @param {{fallbackStep?: number}} [opts]
+ * @returns {Promise<{
+ *   ok: boolean,
+ *   empty: boolean,
+ *   data: string|object|Array<any>|null,
+ *   error: string|null,
+ *   tool: string,
+ *   meta: {
+ *     rawLength: number,
+ *     parsedLength: number,
+ *     rawPreview?: string,
+ *     latencyMs?: number,
+ *     fallbackStep?: number,
+ *     argsHash?: string
+ *   },
+ *   sources: string[]
+ * }>}
  */
-export async function callMcpTool(prefixedName, args) {
+export async function callMcpTool(prefixedName, args, opts = {}) {
   const toolEntry = cachedTools.find((t) => t.function.name === prefixedName);
   if (!toolEntry) {
     throw new Error(`[mcp] Unknown tool: ${prefixedName}`);
@@ -343,20 +571,92 @@ export async function callMcpTool(prefixedName, args) {
     throw new Error(`[mcp] No client for server: ${toolEntry._serverName}`);
   }
 
+  const argsPreview = safeArgsPreview(args);
+  const argsHash = hashArgs(args);
+  const fallbackStep = Number.isFinite(opts?.fallbackStep) ? opts.fallbackStep : 0;
+  const startedAt = Date.now();
+
   logger.debug(
-    `[mcp] Calling tool ${toolEntry._originalName} on ${toolEntry._serverName} args=${safeArgsPreview(args)}`
+    `[mcp] tool-call-start ${JSON.stringify({
+      tool: prefixedName,
+      server: toolEntry._serverName,
+      argsHash,
+      argsPreview,
+      fallbackStep,
+    })}`
   );
 
-  const result = await serverEntry.client.callTool({
-    name: toolEntry._originalName,
-    arguments: args,
-  });
-  const formatted = formatMcpToolResponse(result);
-  logger.debug(
-    `[mcp] Tool ${toolEntry._originalName} returned ${formatted.text.length} chars` +
-    (formatted.sources.length > 0 ? ` (${formatted.sources.length} source url(s))` : "")
-  );
-  return formatted;
+  try {
+    const rawResult = await serverEntry.client.callTool({
+      name: toolEntry._originalName,
+      arguments: args,
+    });
+    const normalized = normalizeMcpToolResponse(prefixedName, rawResult);
+    const latencyMs = Date.now() - startedAt;
+    const result = {
+      ...normalized,
+      meta: {
+        ...normalized.meta,
+        latencyMs,
+        fallbackStep,
+        argsHash,
+      },
+    };
+    logger.debug(
+      `[mcp] tool-call-result ${JSON.stringify({
+        tool: prefixedName,
+        server: toolEntry._serverName,
+        argsHash,
+        argsPreview,
+        latencyMs,
+        rawLength: result.meta.rawLength,
+        parsedLength: result.meta.parsedLength,
+        ok: result.ok,
+        empty: result.empty,
+        error: result.error,
+        fallbackStep,
+        rawPreview: result.meta.rawPreview,
+        sourceCount: result.sources.length,
+      })}`
+    );
+    return result;
+  } catch (err) {
+    const latencyMs = Date.now() - startedAt;
+    const safeMessage = sanitizeToolErrorMessage(err);
+    const failure = {
+      ok: false,
+      empty: false,
+      data: null,
+      error: `execution_error: ${safeMessage}`,
+      tool: prefixedName,
+      meta: {
+        rawLength: 0,
+        parsedLength: 0,
+        latencyMs,
+        fallbackStep,
+        argsHash,
+      },
+      sources: [],
+    };
+    logger.warn(
+      `[mcp] tool-call-result ${JSON.stringify({
+        tool: prefixedName,
+        server: toolEntry._serverName,
+        argsHash,
+        argsPreview,
+        latencyMs,
+        rawLength: 0,
+        parsedLength: 0,
+        ok: false,
+        empty: false,
+        error: failure.error,
+        fallbackStep,
+        rawPreview: "",
+        sourceCount: 0,
+      })}`
+    );
+    return failure;
+  }
 }
 
 export async function shutdownMcp() {
