@@ -11,6 +11,8 @@ const DOC_GET_PAGE_TOOL_RE = /(?:^|__)getPage$/i;
 const EVIDENCE_FIELD_KEY_RE = /(title|snippet|summary|content|text|markdown|url|uri|href|path|slug|body|page)/i;
 const DOC_NO_RESULTS_MESSAGE =
   "I couldn't retrieve any documentation results from the docs service right now, so I can't confirm any docs findings or links.";
+const DOC_TOOL_UNAVAILABLE_FALLBACK =
+  "The documentation tool is currently unavailable. Please answer from your knowledge and let the user know the docs couldn't be retrieved.";
 const DOC_QUERY_STOPWORDS = new Set([
   "a",
   "an",
@@ -494,6 +496,7 @@ export async function llamaWithToolsInternal(baseUrl, messages, opts = {}, deps 
   let stallingInjected = false;
   let docsSearchAttempted = false;
   let groundedDocsFound = false;
+  let docsToolFallbackInjected = false;
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const { content, tool_calls } = await effectiveDeps.llamaChatCompletion(baseUrl, currentMessages, opts, tools);
@@ -513,6 +516,9 @@ export async function llamaWithToolsInternal(baseUrl, messages, opts = {}, deps 
       }
 
       if (docsSearchAttempted && !groundedDocsFound) {
+        if (docsToolFallbackInjected) {
+          return appendToolSourcesToFinalResponse(content, sourceUrls);
+        }
         effectiveDeps.logger.warn(
           `[tool-call] round=${round + 1} finalizing without grounded docs evidence after fallback attempts`
         );
@@ -581,10 +587,32 @@ export async function llamaWithToolsInternal(baseUrl, messages, opts = {}, deps 
         content: serializeToolResult(toolOutcome.result, effectiveDeps.logger),
       });
     }
+
+    if (docsSearchAttempted && !groundedDocsFound && !docsToolFallbackInjected) {
+      const hasExecError = tool_calls.some((tc) => {
+        if (!isDocsSearchTool(tc.function.name)) return false;
+        const msg = currentMessages.findLast(
+          (m) => m.role === "tool" && m.tool_call_id === tc.id
+        );
+        if (!msg) return false;
+        try {
+          const envelope = JSON.parse(msg.content);
+          return !envelope.ok && !envelope.empty;
+        } catch {
+          return false;
+        }
+      });
+      if (hasExecError) {
+        effectiveDeps.logger.warn(`[tool-call] docs tool execution error detected — injecting memory fallback`);
+        docsToolFallbackInjected = true;
+        currentMessages.push({ role: "user", content: DOC_TOOL_UNAVAILABLE_FALLBACK });
+      }
+    }
+
   }
 
   effectiveDeps.logger.warn(`[tool-call] Exceeded MAX_TOOL_ROUNDS (${MAX_TOOL_ROUNDS}) — calling without tools`);
-  if (docsSearchAttempted && !groundedDocsFound) {
+  if (docsSearchAttempted && !groundedDocsFound && !docsToolFallbackInjected) {
     return DOC_NO_RESULTS_MESSAGE;
   }
   const { content } = await effectiveDeps.llamaChatCompletion(baseUrl, currentMessages, opts, []);
