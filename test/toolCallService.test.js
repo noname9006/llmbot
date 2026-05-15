@@ -168,6 +168,7 @@ describe("llamaWithToolsInternal()", () => {
     const logger = createLogger();
     const tools = createDocsTools();
     let round = 0;
+    const seenMessages = [];
 
     const response = await llamaWithToolsInternal(
       "http://llama.test/v1",
@@ -194,8 +195,13 @@ describe("llamaWithToolsInternal()", () => {
         },
         async llamaChatCompletion(baseUrl, messages, opts, availableTools) {
           round += 1;
+          seenMessages.push(messages.map((message) => ({ ...message })));
           if (round === 1) {
             assert.equal(availableTools.length, tools.length);
+            assert.match(
+              messages.at(-1).content,
+              /function calling API — do not write 'call toolname' as text/i
+            );
             return {
               content: null,
               tool_calls: [
@@ -225,6 +231,7 @@ describe("llamaWithToolsInternal()", () => {
 
     assert.match(response, /I found the stBTC staking docs/);
     assert.match(response, /Source: https:\/\/docs\.example\.com\/stbtc\/staking/);
+    assert.equal(seenMessages[0].at(-1).role, "user");
   });
 
   test("appends at most two missing Source lines", async () => {
@@ -481,5 +488,81 @@ describe("llamaWithToolsInternal()", () => {
       (m) => m.role === "user" && m.content?.includes("documentation tool is currently unavailable")
     );
     assert.ok(fallbackMsg, "expected a fallback instruction to be injected into messages");
+  });
+
+  test("retries when the model leaks malformed tool-call text instead of structured tool_calls", async () => {
+    const logger = createLogger();
+    const tools = createDocsTools();
+    const calls = [];
+    const rounds = [];
+    let round = 0;
+
+    const response = await llamaWithToolsInternal(
+      "http://llama.test/v1",
+      [{ role: "user", content: "what is stBTC?" }],
+      {},
+      {
+        mcpEnabled: true,
+        getMcpTools: () => tools,
+        logger,
+        async callMcpTool(toolName) {
+          calls.push(toolName);
+          return {
+            ok: true,
+            empty: false,
+            data: {
+              title: "stBTC",
+              snippet: "stBTC is a Bitcoin liquid staking token.",
+              url: "https://docs.example.com/stbtc",
+            },
+            error: null,
+            tool: toolName,
+            meta: {},
+            sources: ["https://docs.example.com/stbtc"],
+          };
+        },
+        async llamaChatCompletion(baseUrl, messages) {
+          round += 1;
+          rounds.push(messages.map((message) => ({ ...message })));
+          if (round === 1) {
+            return {
+              content: 'call gitbook-1__searchDocumentation{query:"stBTC"}<tool_call|>',
+              tool_calls: null,
+            };
+          }
+          if (round === 2) {
+            const reminder = messages.findLast(
+              (message) => message.role === "user" && /Please make a proper tool call now/i.test(message.content ?? "")
+            );
+            assert.ok(reminder, "expected malformed tool call retry reminder");
+            return {
+              content: null,
+              tool_calls: [
+                {
+                  id: "tool-1",
+                  function: {
+                    name: "gitbook-1__searchDocumentation",
+                    arguments: JSON.stringify({ query: "stBTC" }),
+                  },
+                },
+              ],
+            };
+          }
+          return {
+            content: "stBTC is a Bitcoin liquid staking token.",
+            tool_calls: null,
+          };
+        },
+      }
+    );
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0], "gitbook-1__searchDocumentation");
+    assert.match(response, /stBTC is a Bitcoin liquid staking token/);
+    assert.ok(
+      logger.entries.some((entry) => entry.message.includes("detected malformed tool call syntax")),
+      "expected malformed tool call warning"
+    );
+    assert.match(rounds[0].at(-1).content, /function calling API/i);
   });
 });

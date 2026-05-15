@@ -67,7 +67,8 @@ const ESCALATION_JSON_STRIP_RE = /\{[^{}]*"should_escalate"[^{}]*\}/g;
 // Matches bare __VALE__ token and any trailing text on the same line.
 const VALE_TOKEN_STRIP_RE = /__VALE__[^\n]*/g;
 // Matches leaked raw tool-call syntax (including malformed variants) so it never reaches chat.
-const LEAKED_TOOL_CALL_STRIP_RE = /\b[a-z0-9_-]+__[a-z0-9_-]+(?:\{[\s\S]*?\})?<tool_call\|>?/gi;
+const LEAKED_TOOL_CALL_STRIP_RE =
+  /\b(?:call\s+[a-z0-9_-]+__[a-z0-9_-]+(?:\{[\s\S]*?\})?(?:<?tool_call\|?>?)?|[a-z0-9_-]+__[a-z0-9_-]+(?:\{[\s\S]*?\})?<?tool_call\|?>?)/gi;
 
 // User-facing fallback messages for unexpected model signal outputs.
 const MSG_SEARCH_EMPTY_QUERY =

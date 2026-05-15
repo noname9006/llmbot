@@ -13,6 +13,10 @@ const DOC_NO_RESULTS_MESSAGE =
   "I couldn't retrieve any documentation results from the docs service right now, so I can't confirm any docs findings or links.";
 const DOC_TOOL_UNAVAILABLE_FALLBACK =
   "The documentation tool is currently unavailable. Please answer from your knowledge and let the user know the docs couldn't be retrieved.";
+const TOOL_CALL_FORMAT_REMINDER =
+  "Remember: when you need to use a tool, call it using the function calling API — do not write 'call toolname' as text.";
+const MALFORMED_TOOL_CALL_RE =
+  /\b(?:call\s+[a-z0-9_-]+__[a-z0-9_-]+(?:\{[\s\S]*?\})?(?:<?tool_call\|?>?)?|[a-z0-9_-]+__[a-z0-9_-]+(?:\{[\s\S]*?\})?<?tool_call\|?>?)/i;
 const DOC_QUERY_STOPWORDS = new Set([
   "a",
   "an",
@@ -491,7 +495,19 @@ export async function llamaWithToolsInternal(baseUrl, messages, opts = {}, deps 
     return content ?? "";
   }
 
-  const currentMessages = [...messages];
+  const currentMessages = messages.map((message) => ({ ...message }));
+  const lastMessage = currentMessages[currentMessages.length - 1];
+  if (
+    currentMessages.length <= 2 &&
+    lastMessage?.role === "user" &&
+    typeof lastMessage.content === "string" &&
+    !lastMessage.content.includes(TOOL_CALL_FORMAT_REMINDER)
+  ) {
+    currentMessages[currentMessages.length - 1] = {
+      ...lastMessage,
+      content: `${lastMessage.content}\n\n${TOOL_CALL_FORMAT_REMINDER}`,
+    };
+  }
   const sourceUrls = new Set();
   let stallingInjected = false;
   let docsSearchAttempted = false;
@@ -504,6 +520,19 @@ export async function llamaWithToolsInternal(baseUrl, messages, opts = {}, deps 
     effectiveDeps.logger.debug(`[tool-call] round=${round + 1} tool_calls=${tool_calls?.length ?? 0}`);
 
     if (!tool_calls || tool_calls.length === 0) {
+      if (content && MALFORMED_TOOL_CALL_RE.test(content)) {
+        effectiveDeps.logger.warn(
+          `[tool-call] round=${round + 1} detected malformed tool call syntax in content — injecting format reminder`
+        );
+        currentMessages.push({ role: "assistant", content: content ?? null });
+        currentMessages.push({
+          role: "user",
+          content:
+            "You must use the tools by calling them through the function calling API, not by writing 'call toolname'. Please make a proper tool call now.",
+        });
+        continue;
+      }
+
       if (!stallingInjected && looksLikeStalling(content)) {
         effectiveDeps.logger.debug(`[tool-call] round=${round + 1} stalling detected — injecting tool reminder`);
         stallingInjected = true;

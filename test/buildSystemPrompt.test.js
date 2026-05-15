@@ -12,6 +12,7 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 // ── Test buildSystemPrompt logic directly ─────────────────────────────────────
 // We re-implement the function using the same logic as config.js so that we
@@ -193,7 +194,8 @@ describe("resolveDynamicPrompt()", () => {
 const SIGNAL_STRIP_RE = /__SEARCH__:[^\n]*/g;
 const ESCALATION_JSON_STRIP_RE = /\{[^{}]*"should_escalate"[^{}]*\}/g;
 const VALE_TOKEN_STRIP_RE = /__VALE__[^\n]*/g;
-const LEAKED_TOOL_CALL_STRIP_RE = /\b[a-z0-9_-]+__[a-z0-9_-]+(?:\{[\s\S]*?\})?<tool_call\|>?/gi;
+const LEAKED_TOOL_CALL_STRIP_RE =
+  /\b(?:call\s+[a-z0-9_-]+__[a-z0-9_-]+(?:\{[\s\S]*?\})?(?:<?tool_call\|?>?)?|[a-z0-9_-]+__[a-z0-9_-]+(?:\{[\s\S]*?\})?<?tool_call\|?>?)/gi;
 
 function stripSignals(text) {
   return text
@@ -271,8 +273,27 @@ describe("stripSignals()", () => {
     assert.ok(result.includes("Final line"));
   });
 
+  test("strips malformed tool-call syntax with a leading call prefix", () => {
+    const input =
+      `call gitbook-1__searchDocumentation{query:<|"|>stBTC<|"|>}<tool_call|>\n` +
+      `Actual answer`;
+    const result = stripSignals(input);
+    assert.equal(result, "Actual answer");
+  });
+
   test("does not strip normal text containing double underscores and braces", () => {
     const input = "Use my_server__helper{name} in examples, but keep this sentence.";
     assert.equal(stripSignals(input), input);
+  });
+});
+
+describe("sysprompt_remote.txt", () => {
+  test("includes explicit function calling API instructions for tools", () => {
+    const prompt = readFileSync(
+      new URL("../sysprompt_remote.txt", import.meta.url),
+      "utf8"
+    );
+    assert.match(prompt, /Use the function calling API to call tools/i);
+    assert.match(prompt, /Do NOT write text like "call toolname\{args\}"/i);
   });
 });
