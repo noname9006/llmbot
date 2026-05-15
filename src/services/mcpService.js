@@ -106,7 +106,8 @@ export function buildMcpContextBlock(servers, tools, connectedServerNames) {
     "## Available knowledge tools:\n" +
     `${lines.join("\n")}\n` +
     "Prefer these tools over guessing for specific factual questions about the topics above.\n" +
-    "Only claim you found tool-backed facts when the tool output includes concrete evidence such as a title, snippet, URL, or page content. If a tool returns ok=false or empty=true, say that transparently and try another tool/query instead of guessing." +
+    "Only claim you found tool-backed facts when the tool output includes concrete evidence such as a title, snippet, URL, or page content.\n" +
+    "If a tool returns ok=false or empty=true, say that transparently and try another tool/query instead of guessing." +
     (hasCoingecko
       ? "\nFor current cryptocurrency prices, market data, or coin information, ALWAYS use coingecko tools FIRST before considering web search."
       : "");

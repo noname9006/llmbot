@@ -76,7 +76,7 @@ function truncateString(value, maxLength) {
   return value.length <= maxLength ? value : `${value.slice(0, maxLength)}…`;
 }
 
-function serializeToolResult(result) {
+function serializeToolResult(result, activeLogger = logger) {
   const base = {
     ok: Boolean(result?.ok),
     empty: Boolean(result?.empty),
@@ -103,7 +103,7 @@ function serializeToolResult(result) {
   };
   text = safeJsonStringify(shortened);
   if (text.length <= MAX_TOOL_RESULT_CHARS) {
-    logger.warn(
+    activeLogger.warn(
       `[tool-call] Tool ${base.tool} result envelope exceeded ${MAX_TOOL_RESULT_CHARS} chars; truncating model payload`
     );
     return text;
@@ -113,7 +113,7 @@ function serializeToolResult(result) {
     ...shortened,
     data: truncateString(String(shortened.data ?? ""), Math.floor(MAX_TOOL_RESULT_CHARS / 3)),
   };
-  logger.warn(
+  activeLogger.warn(
     `[tool-call] Tool ${base.tool} result envelope exceeded ${MAX_TOOL_RESULT_CHARS} chars; truncating model payload`
   );
   return truncateString(safeJsonStringify(fallback), MAX_TOOL_RESULT_CHARS);
@@ -585,7 +585,7 @@ export async function llamaWithToolsInternal(baseUrl, messages, opts = {}, deps 
       currentMessages.push({
         role: "tool",
         tool_call_id: tc.id,
-        content: serializeToolResult(toolOutcome.result),
+        content: serializeToolResult(toolOutcome.result, effectiveDeps.logger),
       });
     }
   }

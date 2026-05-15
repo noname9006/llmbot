@@ -141,8 +141,8 @@ describe("buildMcpContextBlock() — input sanitization", () => {
     // The newline is stripped so the injected text cannot start a new prompt line.
     // The merged result appears inside the server-line parenthetical — harmlessly embedded.
     const blockLines = block.split("\n");
-    // A single-server block has exactly 4 lines: header, server line, footer, grounding rule.
-    assert.equal(blockLines.length, 4, "injected newline must not create extra lines in the block");
+    // A single-server block has exactly 5 lines: header, server line, guidance footer, and two grounding lines.
+    assert.equal(blockLines.length, 5, "injected newline must not create extra lines in the block");
     // The label content (minus the stripped newline) should be on the server line
     assert.ok(blockLines[1].includes("Legit label"), "legitimate part of label must be on the server line");
     // No standalone injected-instruction line
@@ -187,9 +187,9 @@ describe("buildMcpContextBlock() — input sanitization", () => {
       ["srv"]
     );
     // The newline is stripped so the injected suffix cannot start a new prompt line.
-    // A single-server block has exactly 4 lines: header, server line, footer, grounding rule.
+    // A single-server block has exactly 5 lines: header, server line, guidance footer, and two grounding lines.
     const blockLines = block.split("\n");
-    assert.equal(blockLines.length, 4, "injected newline in tool name must not create extra lines");
+    assert.equal(blockLines.length, 5, "injected newline in tool name must not create extra lines");
     // The valid part of the tool name must appear on the server line
     assert.ok(blockLines[1].includes("getPage"), "valid part of tool name must survive on the server line");
     // No standalone injected line
