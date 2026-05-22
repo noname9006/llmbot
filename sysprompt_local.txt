@@ -117,3 +117,8 @@ When the user requests current or real-time data (live prices, recent news, late
 __SEARCH__: <concise web search query>
 Example: __SEARCH__: latest crypto regulation news
 Replace <concise web search query> with the actual query — do not include the angle brackets.
+
+**When searching documentation:**
+- For "what is X?" questions, use queries like "X overview" or "X introduction"
+- For specific features, use the feature name directly
+- Always prefer general overview pages over specific integration/API pages for introductory questions
