@@ -471,7 +471,7 @@ function rankSearchResults(results) {
     'what-is',
     'about',
     'index',
-    '/docs/$',
+    '/docs/',
     'readme',
   ];
 
@@ -555,12 +555,21 @@ export function normalizeMcpToolResponse(toolName, rawResult) {
     // Re-rank search results if data looks like a search response
     if (Array.isArray(data)) {
       data = rankSearchResults(data);
-    } else if (data?.results && Array.isArray(data.results)) {
-      data.results = rankSearchResults(data.results);
-    } else if (data?.items && Array.isArray(data.items)) {
-      data.items = rankSearchResults(data.items);
-    } else if (data?.content && Array.isArray(data.content)) {
-      data.content = rankSearchResults(data.content);
+    } else if (data !== null && typeof data === 'object') {
+      // Rank known collection arrays at the top level (e.g. data.results, data.items)
+      for (const key of ["results", "items", "hits", "pages", "documents", "entries"]) {
+        if (Array.isArray(data[key])) {
+          data[key] = rankSearchResults(data[key]);
+        }
+      }
+      // Rank collection arrays nested inside structuredContent (GitBook puts results in structuredContent.hits)
+      if (data.structuredContent !== null && typeof data.structuredContent === 'object' && !Array.isArray(data.structuredContent)) {
+        for (const key of ["results", "items", "hits", "pages", "documents", "entries"]) {
+          if (Array.isArray(data.structuredContent[key])) {
+            data.structuredContent[key] = rankSearchResults(data.structuredContent[key]);
+          }
+        }
+      }
     }
 
     const empty = isToolValueEmpty(data);
