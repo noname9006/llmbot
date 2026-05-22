@@ -128,6 +128,32 @@ describe("normalizeMcpToolResponse()", () => {
     assert.equal(result.empty, false);
     assert.match(result.error ?? "", /^parse_error:/);
   });
+
+  test("deprioritizes campaign/integration-specific links below overview and general pages", async () => {
+    const { normalizeMcpToolResponse } = await loadMcpServiceFresh();
+    const result = normalizeMcpToolResponse("gitbook-2__searchDocumentation", {
+      result: {
+        hits: [
+          { title: "Campaign", url: "https://docs.example.com/campaigns/level-4" },
+          { title: "FAQ", url: "https://docs.example.com/faq" },
+          { title: "Plutus strategy", url: "https://docs.example.com/strategies/plutus" },
+          { title: "Introduction", url: "https://docs.example.com/introduction" },
+        ],
+      },
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.error, null);
+    assert.deepEqual(
+      result.data.map((hit) => hit.url),
+      [
+        "https://docs.example.com/introduction",
+        "https://docs.example.com/faq",
+        "https://docs.example.com/campaigns/level-4",
+        "https://docs.example.com/strategies/plutus",
+      ]
+    );
+  });
 });
 
 describe("buildMcpContextBlock() — input sanitization", () => {

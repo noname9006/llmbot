@@ -483,6 +483,13 @@ function rankSearchResults(results) {
     'advanced',
     'tutorial',
     'guide',
+    'campaign',
+    'level-',
+    '/guides/',
+    'plutus',
+    'gmx',
+    'cookbook',
+    'troubleshoot',
   ];
 
   return [...results].sort((a, b) => {

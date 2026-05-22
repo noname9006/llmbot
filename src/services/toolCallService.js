@@ -248,7 +248,31 @@ function buildDocsQueryVariants(query) {
     variants.push(normalized);
   };
 
-  add(base);
+  const words = base.toLowerCase().split(/\s+/).filter(Boolean);
+  const hasContextKeyword =
+    /(how|why|when|where|overview|introduction|guide|tutorial|integration|api|setup|install|configure)/i.test(
+      base
+    );
+  const hasEntityPromptPrefix = /^(what\s+(is|are)|tell\s+me\s+about)\s+/i.test(base);
+  const isLikelyBareEntity = words.length <= 3 && !hasContextKeyword && (words.length <= 1 || hasEntityPromptPrefix);
+
+  if (isLikelyBareEntity) {
+    const entityName = base.replace(/^(what\s+(is|are)|tell\s+me\s+about)\s+/i, "").trim();
+
+    if (entityName && entityName !== base) {
+      logger.debug(
+        `[tool-call] Transformed bare query "${base}" → added overview/intro variants for "${entityName}"`
+      );
+    }
+
+    if (entityName) {
+      add(`${entityName} overview`);
+      add(`${entityName} introduction`);
+    }
+    add(base);
+  } else {
+    add(base);
+  }
 
   const cleaned = base
     .replace(/[^\p{L}\p{N}\s-]+/gu, " ")
