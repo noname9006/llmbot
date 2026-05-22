@@ -55,6 +55,57 @@ function createDocsTools() {
 }
 
 describe("executeToolCallWithFallback()", () => {
+  test("transforms bare 'what is' docs queries into overview-first variants", async () => {
+    const logger = createLogger();
+    const tools = createDocsTools();
+    const calls = [];
+    await executeToolCallWithFallback(
+      "gitbook-2__searchDocumentation",
+      { query: "what is dolomite" },
+      {
+        tools,
+        logger,
+        async callMcpTool(toolName, args) {
+          calls.push({ toolName, args });
+          if (toolName === "gitbook-2__searchDocumentation" && args.query === "dolomite overview") {
+            return {
+              ok: true,
+              empty: false,
+              data: {
+                hits: [{ title: "Dolomite Introduction", path: "/introduction", url: "https://docs.example.com/introduction" }],
+              },
+              error: null,
+              tool: toolName,
+              meta: {},
+              sources: ["https://docs.example.com/introduction"],
+            };
+          }
+          if (toolName === "gitbook-2__getPage") {
+            return {
+              ok: true,
+              empty: false,
+              data: {
+                title: "Dolomite Introduction",
+                content: "Dolomite docs content",
+                url: "https://docs.example.com/introduction",
+              },
+              error: null,
+              tool: toolName,
+              meta: {},
+              sources: ["https://docs.example.com/introduction"],
+            };
+          }
+          throw new Error(`Unexpected tool call: ${toolName} ${JSON.stringify(args)}`);
+        },
+      }
+    );
+
+    const searchQueries = calls
+      .filter((call) => call.toolName === "gitbook-2__searchDocumentation")
+      .map((call) => call.args.query);
+    assert.deepEqual(searchQueries, ["dolomite overview"]);
+  });
+
   test("retries docs search with simplified queries and fetches a concrete page", async () => {
     const logger = createLogger();
     const tools = createDocsTools();
