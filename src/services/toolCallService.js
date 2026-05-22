@@ -254,7 +254,7 @@ function buildDocsQueryVariants(query) {
       base
     );
   const hasEntityPromptPrefix = /^(what\s+(is|are)|tell\s+me\s+about)\s+/i.test(base);
-  const isLikelyBareEntity = words.length <= 3 && !hasContextKeyword && (words.length <= 1 || hasEntityPromptPrefix);
+  const isLikelyBareEntity = !hasContextKeyword && (words.length <= 1 || hasEntityPromptPrefix);
 
   if (isLikelyBareEntity) {
     const entityName = base.replace(/^(what\s+(is|are)|tell\s+me\s+about)\s+/i, "").trim();
