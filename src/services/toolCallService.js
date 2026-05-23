@@ -145,19 +145,7 @@ function isDocsGetPageTool(toolName) {
 }
 
 function appendToolSourcesToFinalResponse(content, sourceUrls) {
-  if (sourceUrls.size === 0) return content ?? "";
-  const answer = content ?? "";
-  const missingSources = [...sourceUrls].filter((url) => {
-    const escapedUrl = url.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const sourceLineRe = new RegExp(`^Source:\\s*${escapedUrl}$`, "m");
-    return !sourceLineRe.test(answer);
-  });
-  if (missingSources.length === 0) return answer;
-  const limitedSources = missingSources.slice(0, 2);
-  const sourceLines = limitedSources.map((url) => `Source: ${url}`).join("\n");
-  return answer.trim()
-    ? `${answer.trimEnd()}\n\n${sourceLines}`
-    : sourceLines;
+  return content ?? "";
 }
 
 function hasConcreteEvidence(value, depth = 0) {
