@@ -336,7 +336,7 @@ describe("llamaWithToolsInternal()", () => {
     assert.equal(seenMessages[0].at(-1).role, "user");
   });
 
-  test("does not append missing Source lines that were not cited by the model", async () => {
+  test("appends at most two missing Source lines", async () => {
     const tools = createDocsTools();
     let round = 0;
 
@@ -384,7 +384,11 @@ describe("llamaWithToolsInternal()", () => {
       }
     );
 
-    assert.equal(response, "Here you go");
+    const sourceMatches = response.match(/^Source:\s.*$/gm) ?? [];
+    assert.equal(sourceMatches.length, 2);
+    assert.ok(response.includes("Source: https://docs.example.com/source-1"));
+    assert.ok(response.includes("Source: https://docs.example.com/source-2"));
+    assert.ok(!response.includes("Source: https://docs.example.com/source-3"));
   });
 
   test("returns an explicit no-results response when all docs fallbacks are empty", async () => {
