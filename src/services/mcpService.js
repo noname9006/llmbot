@@ -453,33 +453,6 @@ export function extractMcpSourceUrls(result) {
   return [...urls];
 }
 
-/**
- * Re-ranks search results to prefer overview/introduction pages.
- * @param {Array<any>} results - Array of search result items
- * @returns {Array<any>} - Sorted results
- */
-function rankSearchResults(results) {
-  if (!Array.isArray(results) || results.length === 0) return results;
-
-  const overviewKeywords = [
-    'introduction', 'overview', 'getting-started', 'what-is',
-    'about', 'index', '/docs/', 'readme',
-  ];
-  const generalKeywords = ['faq', 'glossary'];
-
-  const rankScore = (url) => {
-    if (overviewKeywords.some(kw => url.includes(kw))) return 0;
-    if (generalKeywords.some(kw => url.includes(kw))) return 1;
-    return 2;
-  };
-
-  return [...results].sort((a, b) => {
-    const aUrl = (a?.url || a?.uri || a?.link || '').toLowerCase();
-    const bUrl = (b?.url || b?.uri || b?.link || '').toLowerCase();
-    return rankScore(aUrl) - rankScore(bUrl);
-  });
-}
-
 function appendSourceLines(text, sources) {
   const baseText = typeof text === "string" ? text : "";
   if (!Array.isArray(sources) || sources.length === 0) {
@@ -525,27 +498,7 @@ export function normalizeMcpToolResponse(toolName, rawResult) {
   const rawPreview = sanitizeRawPreview(rawSerialized);
 
   try {
-    let data = pickToolPayload(rawResult);
-
-    // Re-rank search results if data looks like a search response
-    if (Array.isArray(data)) {
-      data = rankSearchResults(data);
-    } else if (data !== null && typeof data === 'object') {
-      // Rank known collection arrays at the top level (e.g. data.results, data.items)
-      for (const key of ["results", "items", "hits", "pages", "documents", "entries"]) {
-        if (Array.isArray(data[key])) {
-          data[key] = rankSearchResults(data[key]);
-        }
-      }
-      // Rank collection arrays nested inside structuredContent (GitBook puts results in structuredContent.hits)
-      if (data.structuredContent !== null && typeof data.structuredContent === 'object' && !Array.isArray(data.structuredContent)) {
-        for (const key of ["results", "items", "hits", "pages", "documents", "entries"]) {
-          if (Array.isArray(data.structuredContent[key])) {
-            data.structuredContent[key] = rankSearchResults(data.structuredContent[key]);
-          }
-        }
-      }
-    }
+    const data = pickToolPayload(rawResult);
 
     const empty = isToolValueEmpty(data);
     const parsedLength = empty ? 0 : safeJsonStringify(data).length;
