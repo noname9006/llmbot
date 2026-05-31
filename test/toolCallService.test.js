@@ -54,6 +54,10 @@ function createDocsTools() {
   ];
 }
 
+function createDocsSearchOnlyTools() {
+  return createDocsTools().filter((tool) => tool.function.name !== "gitbook-2__getPage");
+}
+
 describe("executeToolCallWithFallback()", () => {
   test("transforms bare 'what is' docs queries into overview-first variants", async () => {
     const logger = createLogger();
@@ -262,6 +266,93 @@ describe("executeToolCallWithFallback()", () => {
     assert.equal(result.result.ok, false);
     assert.match(result.result.error ?? "", /^parse_error:/);
     assert.equal(result.result.meta.attempts[0].error, "parse_error: invalid MCP payload");
+  });
+
+  test("trims fallback search result collection arrays to top 2 when getPage fails", async () => {
+    const result = await executeToolCallWithFallback(
+      "gitbook-2__searchDocumentation",
+      { query: "what is dolomite" },
+      {
+        tools: createDocsTools(),
+        logger: createLogger(),
+        async callMcpTool(toolName) {
+          if (toolName === "gitbook-2__searchDocumentation") {
+            return {
+              ok: true,
+              empty: false,
+              data: {
+                hits: [
+                  { url: "https://docs.example.com/introduction" },
+                  { url: "https://docs.example.com/overview" },
+                  { url: "https://docs.example.com/campaigns/level-4" },
+                ],
+              },
+              error: null,
+              tool: toolName,
+              meta: {},
+              sources: [
+                "https://docs.example.com/introduction",
+                "https://docs.example.com/overview",
+                "https://docs.example.com/campaigns/level-4",
+              ],
+            };
+          }
+          if (toolName === "gitbook-2__getPage") {
+            return { ok: true, empty: true, data: null, error: null, tool: toolName, meta: {}, sources: [] };
+          }
+          throw new Error(`Unexpected tool call: ${toolName}`);
+        },
+      }
+    );
+
+    assert.equal(result.result.tool, "gitbook-2__searchDocumentation");
+    assert.equal(result.result.data.hits.length, 2);
+    assert.deepEqual(
+      result.result.data.hits.map((hit) => hit.url),
+      ["https://docs.example.com/introduction", "https://docs.example.com/overview"]
+    );
+    assert.deepEqual(result.result.sources, [
+      "https://docs.example.com/introduction",
+      "https://docs.example.com/overview",
+      "https://docs.example.com/campaigns/level-4",
+    ]);
+  });
+
+  test("trims fallback GitBook content arrays to top 2 when getPage is unavailable", async () => {
+    const result = await executeToolCallWithFallback(
+      "gitbook-2__searchDocumentation",
+      { query: "what is dolomite" },
+      {
+        tools: createDocsSearchOnlyTools(),
+        logger: createLogger(),
+        async callMcpTool(toolName) {
+          if (toolName === "gitbook-2__searchDocumentation") {
+            return {
+              ok: true,
+              empty: false,
+              data: {
+                content: [
+                  { type: "text", text: "Result 1" },
+                  { type: "text", text: "Result 2" },
+                  { type: "text", text: "Result 3" },
+                ],
+              },
+              error: null,
+              tool: toolName,
+              meta: {},
+              sources: [],
+            };
+          }
+          throw new Error(`Unexpected tool call: ${toolName}`);
+        },
+      }
+    );
+
+    assert.equal(result.result.data.content.length, 2);
+    assert.deepEqual(
+      result.result.data.content.map((entry) => entry.text),
+      ["Result 1", "Result 2"]
+    );
   });
 });
 
