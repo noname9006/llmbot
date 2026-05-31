@@ -59,7 +59,7 @@ function createDocsSearchOnlyTools() {
 }
 
 describe("executeToolCallWithFallback()", () => {
-  test("transforms bare 'what is' docs queries into overview-first variants", async () => {
+  test("keeps bare 'what is' docs queries unchanged", async () => {
     const logger = createLogger();
     const tools = createDocsTools();
     const calls = [];
@@ -71,7 +71,7 @@ describe("executeToolCallWithFallback()", () => {
         logger,
         async callMcpTool(toolName, args) {
           calls.push({ toolName, args });
-          if (toolName === "gitbook-2__searchDocumentation" && args.query === "dolomite overview") {
+          if (toolName === "gitbook-2__searchDocumentation" && args.query === "what is dolomite") {
             return {
               ok: true,
               empty: false,
@@ -107,7 +107,7 @@ describe("executeToolCallWithFallback()", () => {
     const searchQueries = calls
       .filter((call) => call.toolName === "gitbook-2__searchDocumentation")
       .map((call) => call.args.query);
-    assert.deepEqual(searchQueries, ["dolomite overview"]);
+    assert.deepEqual(searchQueries, ["what is dolomite"]);
     assert.ok(
       logger.entries.some((entry) =>
         entry.message.includes("[tool-call] executeToolCallWithFallback tool=gitbook-2__searchDocumentation isDocsSearch=true")
@@ -115,7 +115,7 @@ describe("executeToolCallWithFallback()", () => {
       "expected executeToolCallWithFallback entry log"
     );
     assert.ok(
-      logger.entries.some((entry) => entry.message.includes('[tool-call] query variants: ["dolomite overview"')),
+      logger.entries.some((entry) => entry.message.includes('[tool-call] query variants: ["what is dolomite"')),
       "expected query variants log"
     );
     assert.ok(
@@ -132,7 +132,7 @@ describe("executeToolCallWithFallback()", () => {
     );
   });
 
-  test("transforms 'tell me about' docs queries into overview-first variants", async () => {
+  test("keeps 'tell me about' docs queries unchanged", async () => {
     const logger = createLogger();
     const tools = createDocsTools();
     const calls = [];
@@ -144,7 +144,7 @@ describe("executeToolCallWithFallback()", () => {
         logger,
         async callMcpTool(toolName, args) {
           calls.push({ toolName, args });
-          if (toolName === "gitbook-2__searchDocumentation" && args.query === "dolomite overview") {
+          if (toolName === "gitbook-2__searchDocumentation" && args.query === "tell me about dolomite") {
             return {
               ok: true,
               empty: false,
@@ -180,7 +180,7 @@ describe("executeToolCallWithFallback()", () => {
     const searchQueries = calls
       .filter((call) => call.toolName === "gitbook-2__searchDocumentation")
       .map((call) => call.args.query);
-    assert.deepEqual(searchQueries, ["dolomite overview"]);
+    assert.deepEqual(searchQueries, ["tell me about dolomite"]);
   });
 
   test("retries docs search with simplified queries and fetches a concrete page", async () => {
@@ -480,7 +480,7 @@ describe("llamaWithToolsInternal()", () => {
     );
   });
 
-  test("appends the top-ranked source URL from search fallback result", async () => {
+  test("appends the top-ranked source URL from extracted search sources", async () => {
     const tools = createDocsTools();
     let round = 0;
 
@@ -497,12 +497,7 @@ describe("llamaWithToolsInternal()", () => {
             return {
               ok: true,
               empty: false,
-              data: {
-                hits: [
-                  { title: "stBTC page 1", url: "https://docs.example.com/source-1" },
-                  { title: "stBTC page 2", url: "https://docs.example.com/source-2" },
-                ],
-              },
+              data: { hits: [{ title: "stBTC page 1" }, { title: "stBTC page 2" }] },
               error: null,
               tool: toolName,
               meta: {},

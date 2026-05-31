@@ -297,34 +297,31 @@ describe("sysprompt_remote.txt", () => {
     assert.match(prompt, /Do NOT write text like "call toolname\{args\}"/i);
   });
 
-  test('enforces overview queries for "what is X" documentation searches', () => {
+  test('uses direct queries for "what is X" documentation searches', () => {
     const prompt = readFileSync(
       new URL("../sysprompt_remote.txt", import.meta.url),
       "utf8"
     );
-    assert.match(prompt, /CRITICAL: Documentation Search Query Rules/);
-    assert.match(prompt, /NEVER search with bare protocol names/i);
-    assert.match(prompt, /searchDocumentation\(\{query: "dolomite overview"\}\)/);
-    assert.match(prompt, /searchDocumentation\(\{query: "botanix introduction"\}\)/);
+    assert.doesNotMatch(prompt, /CRITICAL: Documentation Search Query Rules/);
+    assert.doesNotMatch(prompt, /NEVER search with bare protocol names for introductory questions/i);
     assert.match(
       prompt,
-      /"what is dolomite" → call gitbook-3 searchDocumentation with query "dolomite introduction"/
+      /"what is dolomite" → call gitbook-3 searchDocumentation with query "dolomite"/
     );
   });
 });
 
 describe("sysprompt_local.txt", () => {
-  test("includes critical documentation search query rules and dolomite example", () => {
+  test("uses direct documentation queries and includes dolomite example", () => {
     const prompt = readFileSync(
       new URL("../sysprompt_local.txt", import.meta.url),
       "utf8"
     );
-    assert.match(prompt, /CRITICAL: Documentation Search Query Rules/);
-    assert.match(prompt, /NEVER search with bare protocol names/i);
-    assert.match(prompt, /searchDocumentation\(\{query: "dolomite overview"\}\)/);
+    assert.doesNotMatch(prompt, /CRITICAL: Documentation Search Query Rules/);
+    assert.doesNotMatch(prompt, /NEVER search with bare protocol names for introductory questions/i);
     assert.match(
       prompt,
-      /"what is dolomite" → call gitbook-3 searchDocumentation with query "dolomite introduction"/
+      /"what is dolomite" → call gitbook-3 searchDocumentation with query "dolomite"/
     );
   });
 });
