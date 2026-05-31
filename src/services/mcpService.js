@@ -459,37 +459,11 @@ export function extractMcpSourceUrls(result) {
  * @returns {Array<any>} - Sorted results
  */
 function rankSearchResults(results) {
-  if (!Array.isArray(results) || results.length === 0) {
-    return results;
-  }
+  if (!Array.isArray(results) || results.length === 0) return results;
 
-  // Keywords that indicate a general overview page
   const overviewKeywords = [
-    'introduction',
-    'overview',
-    'getting-started',
-    'what-is',
-    'about',
-    'index',
-    '/docs/',
-    'readme',
-  ];
-
-  // Keywords that indicate a specific/advanced page (lower priority)
-  const specificKeywords = [
-    'integration',
-    'api',
-    'reference',
-    'advanced',
-    'tutorial',
-    'guide',
-    'campaign',
-    'level-',
-    '/guides/',
-    'plutus',
-    'gmx',
-    'cookbook',
-    'troubleshoot',
+    'introduction', 'overview', 'getting-started', 'what-is',
+    'about', 'index', '/docs/', 'readme',
   ];
 
   return [...results].sort((a, b) => {
@@ -502,13 +476,7 @@ function rankSearchResults(results) {
     if (aIsOverview && !bIsOverview) return -1;
     if (!aIsOverview && bIsOverview) return 1;
 
-    const aIsSpecific = specificKeywords.some(kw => aUrl.includes(kw));
-    const bIsSpecific = specificKeywords.some(kw => bUrl.includes(kw));
-
-    if (!aIsSpecific && bIsSpecific) return -1;
-    if (aIsSpecific && !bIsSpecific) return 1;
-
-    return 0;
+    return 0; // preserve server's original order for everything else
   });
 }
 
