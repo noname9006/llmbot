@@ -6,8 +6,10 @@ import { llamaChatCompletion } from "./llamaService.js";
 const MAX_TOOL_ROUNDS = 5;
 const MAX_TOOL_RESULT_CHARS = 8_000;
 const MAX_EVIDENCE_DEPTH = 6;
+const MAX_SEARCH_RESULT_ITEMS = 2;
 const DOC_SEARCH_TOOL_RE = /(?:^|__)searchDocumentation$/i;
 const DOC_GET_PAGE_TOOL_RE = /(?:^|__)getPage$/i;
+const SEARCH_RESULT_COLLECTION_KEYS = ["results", "items", "hits", "pages", "documents", "entries"];
 const EVIDENCE_FIELD_KEY_RE = /(title|snippet|summary|content|text|markdown|url|uri|href|path|slug|body|page)/i;
 const DOC_NO_RESULTS_MESSAGE =
   "I couldn't retrieve any documentation results from the docs service right now, so I can't confirm any docs findings or links.";
@@ -235,6 +237,37 @@ function attachAttemptMetadata(result, attempts) {
       fallbackCount: Math.max(0, attempts.length - 1),
     },
   };
+}
+
+function trimSearchResultData(result, maxItems = MAX_SEARCH_RESULT_ITEMS) {
+  if (!result || result.data == null) return result;
+
+  const { data } = result;
+  if (Array.isArray(data)) {
+    return { ...result, data: data.slice(0, maxItems) };
+  }
+
+  if (typeof data !== "object") return result;
+
+  let trimmedData = data;
+  let changed = false;
+
+  for (const key of SEARCH_RESULT_COLLECTION_KEYS) {
+    if (Array.isArray(data[key])) {
+      if (!changed) trimmedData = { ...data };
+      trimmedData[key] = data[key].slice(0, maxItems);
+      changed = true;
+    }
+  }
+
+  if (Array.isArray(data.content)) {
+    if (!changed) trimmedData = { ...data };
+    trimmedData.content = data.content.slice(0, maxItems);
+    changed = true;
+  }
+
+  if (!changed) return result;
+  return { ...result, data: trimmedData };
 }
 
 function buildDocsQueryVariants(query) {
@@ -503,7 +536,8 @@ export async function executeToolCallWithFallback(toolName, args, deps = {}) {
           };
         }
 
-        const result = attachAttemptMetadata(searchResult, attempts);
+        const trimmedSearchResult = trimSearchResultData(searchResult, MAX_SEARCH_RESULT_ITEMS);
+        const result = attachAttemptMetadata(trimmedSearchResult, attempts);
         return {
           result,
           grounded: isGroundedToolResult(result),
