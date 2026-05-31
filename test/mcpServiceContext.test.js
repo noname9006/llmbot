@@ -129,7 +129,7 @@ describe("normalizeMcpToolResponse()", () => {
     assert.match(result.error ?? "", /^parse_error:/);
   });
 
-  test("deprioritizes campaign/integration-specific links below overview and general pages", async () => {
+  test("preserves MCP server ranking order for search hits", async () => {
     const { normalizeMcpToolResponse } = await loadMcpServiceFresh();
     const result = normalizeMcpToolResponse("gitbook-2__searchDocumentation", {
       result: {
@@ -147,10 +147,10 @@ describe("normalizeMcpToolResponse()", () => {
     assert.deepEqual(
       result.data.map((hit) => hit.url),
       [
-        "https://docs.example.com/introduction",
-        "https://docs.example.com/faq",
         "https://docs.example.com/campaigns/level-4",
+        "https://docs.example.com/faq",
         "https://docs.example.com/strategies/plutus",
+        "https://docs.example.com/introduction",
       ]
     );
   });
