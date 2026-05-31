@@ -108,6 +108,28 @@ describe("executeToolCallWithFallback()", () => {
       .filter((call) => call.toolName === "gitbook-2__searchDocumentation")
       .map((call) => call.args.query);
     assert.deepEqual(searchQueries, ["dolomite overview"]);
+    assert.ok(
+      logger.entries.some((entry) =>
+        entry.message.includes("[tool-call] executeToolCallWithFallback tool=gitbook-2__searchDocumentation isDocsSearch=true")
+      ),
+      "expected executeToolCallWithFallback entry log"
+    );
+    assert.ok(
+      logger.entries.some((entry) => entry.message.includes('[tool-call] query variants: ["dolomite overview"')),
+      "expected query variants log"
+    );
+    assert.ok(
+      logger.entries.some((entry) => entry.message.includes("[tool-call] search tool candidates (2):")),
+      "expected search tool candidates log"
+    );
+    assert.ok(
+      logger.entries.some((entry) => entry.message.includes("[tool-call] maybeFetchDocsPage: 1 unique page candidates")),
+      "expected maybeFetchDocsPage candidate count log"
+    );
+    assert.ok(
+      logger.entries.some((entry) => entry.message.includes("[tool-call] getPage succeeded — canonicalUrl=https://docs.example.com/introduction")),
+      "expected getPage success log"
+    );
   });
 
   test("transforms 'tell me about' docs queries into overview-first variants", async () => {
@@ -269,12 +291,13 @@ describe("executeToolCallWithFallback()", () => {
   });
 
   test("trims fallback search result collection arrays to top 2 when getPage fails", async () => {
+    const logger = createLogger();
     const result = await executeToolCallWithFallback(
       "gitbook-2__searchDocumentation",
       { query: "what is dolomite" },
       {
         tools: createDocsTools(),
-        logger: createLogger(),
+        logger,
         async callMcpTool(toolName) {
           if (toolName === "gitbook-2__searchDocumentation") {
             return {
@@ -316,6 +339,24 @@ describe("executeToolCallWithFallback()", () => {
       "https://docs.example.com/overview",
       "https://docs.example.com/campaigns/level-4",
     ]);
+    assert.ok(
+      logger.entries.some((entry) =>
+        entry.message.includes("[tool-call] getPage unavailable or failed — using trimmed search result (fallback path)")
+      ),
+      "expected fallback-path log"
+    );
+    assert.ok(
+      logger.entries.some((entry) =>
+        entry.message.includes("[tool-call] trimSearchResultData: maxItems=2 data shape=object changed=true")
+      ),
+      "expected trimSearchResultData log"
+    );
+    assert.ok(
+      logger.entries.some((entry) =>
+        entry.message.includes('[tool-call] extractTopRankedSourceUrls: picked 1 url(s): ["https://docs.example.com/introduction"]')
+      ),
+      "expected extractTopRankedSourceUrls log"
+    );
   });
 
   test("trims fallback GitBook content arrays to top 2 when getPage is unavailable", async () => {
@@ -425,6 +466,18 @@ describe("llamaWithToolsInternal()", () => {
     assert.match(response, /I found the stBTC staking docs/);
     assert.match(response, /Source: https:\/\/docs\.example\.com\/stbtc\/staking/);
     assert.equal(seenMessages[0].at(-1).role, "user");
+    assert.ok(
+      logger.entries.some((entry) =>
+        entry.message.includes("[tool-call] llamaWithTools url=http://llama.test/v1 mcpEnabled=true tools=3")
+      ),
+      "expected llamaWithTools startup log"
+    );
+    assert.ok(
+      logger.entries.some((entry) =>
+        entry.message.includes("[tool-call] collected sourceUrl: https://docs.example.com/stbtc/staking")
+      ),
+      "expected collected sourceUrl log"
+    );
   });
 
   test("appends the top-ranked source URL from search fallback result", async () => {
