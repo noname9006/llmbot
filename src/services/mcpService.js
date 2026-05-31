@@ -465,18 +465,18 @@ function rankSearchResults(results) {
     'introduction', 'overview', 'getting-started', 'what-is',
     'about', 'index', '/docs/', 'readme',
   ];
+  const generalKeywords = ['faq', 'glossary'];
+
+  const rankScore = (url) => {
+    if (overviewKeywords.some(kw => url.includes(kw))) return 0;
+    if (generalKeywords.some(kw => url.includes(kw))) return 1;
+    return 2;
+  };
 
   return [...results].sort((a, b) => {
     const aUrl = (a?.url || a?.uri || a?.link || '').toLowerCase();
     const bUrl = (b?.url || b?.uri || b?.link || '').toLowerCase();
-
-    const aIsOverview = overviewKeywords.some(kw => aUrl.includes(kw));
-    const bIsOverview = overviewKeywords.some(kw => bUrl.includes(kw));
-
-    if (aIsOverview && !bIsOverview) return -1;
-    if (!aIsOverview && bIsOverview) return 1;
-
-    return 0; // preserve server's original order for everything else
+    return rankScore(aUrl) - rankScore(bUrl);
   });
 }
 

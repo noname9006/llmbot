@@ -336,7 +336,7 @@ describe("llamaWithToolsInternal()", () => {
     assert.equal(seenMessages[0].at(-1).role, "user");
   });
 
-  test("appends at most two missing Source lines", async () => {
+  test("appends the top-ranked source URL from search fallback result", async () => {
     const tools = createDocsTools();
     let round = 0;
 
@@ -348,20 +348,28 @@ describe("llamaWithToolsInternal()", () => {
         mcpEnabled: true,
         getMcpTools: () => tools,
         logger: createLogger(),
-        async callMcpTool() {
-          return {
-            ok: true,
-            empty: false,
-            data: { title: "stBTC docs" },
-            error: null,
-            tool: "gitbook-2__searchDocumentation",
-            meta: {},
-            sources: [
-              "https://docs.example.com/source-1",
-              "https://docs.example.com/source-2",
-              "https://docs.example.com/source-3",
-            ],
-          };
+        async callMcpTool(toolName) {
+          if (toolName === "gitbook-2__searchDocumentation") {
+            return {
+              ok: true,
+              empty: false,
+              data: {
+                hits: [
+                  { title: "stBTC page 1", url: "https://docs.example.com/source-1" },
+                  { title: "stBTC page 2", url: "https://docs.example.com/source-2" },
+                ],
+              },
+              error: null,
+              tool: toolName,
+              meta: {},
+              sources: [
+                "https://docs.example.com/source-1",
+                "https://docs.example.com/source-2",
+              ],
+            };
+          }
+          // getPage returns empty so we fall back to search result
+          return { ok: true, empty: true, data: null, error: null, tool: toolName, meta: {}, sources: [] };
         },
         async llamaChatCompletion() {
           round += 1;
@@ -385,10 +393,9 @@ describe("llamaWithToolsInternal()", () => {
     );
 
     const sourceMatches = response.match(/^Source:\s.*$/gm) ?? [];
-    assert.equal(sourceMatches.length, 2);
+    assert.equal(sourceMatches.length, 1);
     assert.ok(response.includes("Source: https://docs.example.com/source-1"));
-    assert.ok(response.includes("Source: https://docs.example.com/source-2"));
-    assert.ok(!response.includes("Source: https://docs.example.com/source-3"));
+    assert.ok(!response.includes("Source: https://docs.example.com/source-2"));
   });
 
   test("returns an explicit no-results response when all docs fallbacks are empty", async () => {

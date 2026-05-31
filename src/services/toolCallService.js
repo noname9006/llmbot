@@ -350,6 +350,46 @@ function buildGetPageArgs(toolDefinition, candidate) {
   return null;
 }
 
+const RANKED_COLLECTION_KEYS = ["results", "items", "hits", "pages", "documents", "entries"];
+
+function extractTopRankedSourceUrls(searchResult) {
+  const data = searchResult?.data;
+  if (!data) return [];
+
+  if (Array.isArray(data)) {
+    const first = data[0];
+    const url = first?.url ?? first?.uri ?? first?.href;
+    return url ? [url] : [];
+  }
+
+  if (typeof data === "object") {
+    for (const key of RANKED_COLLECTION_KEYS) {
+      if (Array.isArray(data[key]) && data[key].length > 0) {
+        const first = data[key][0];
+        const url = first?.url ?? first?.uri ?? first?.href;
+        if (url) return [url];
+      }
+    }
+    if (
+      typeof data.structuredContent === "object" &&
+      data.structuredContent !== null &&
+      !Array.isArray(data.structuredContent)
+    ) {
+      for (const key of RANKED_COLLECTION_KEYS) {
+        if (Array.isArray(data.structuredContent[key]) && data.structuredContent[key].length > 0) {
+          const first = data.structuredContent[key][0];
+          const url = first?.url ?? first?.uri ?? first?.href;
+          if (url) return [url];
+        }
+      }
+    }
+    const url = data.url ?? data.uri ?? data.href;
+    return url ? [url] : [];
+  }
+
+  return [];
+}
+
 async function maybeFetchDocsPage(searchToolName, searchResult, tools, deps, initialFallbackStep) {
   const { serverName } = splitToolName(searchToolName);
   const getPageTool = tools.find((tool) =>
@@ -383,7 +423,8 @@ async function maybeFetchDocsPage(searchToolName, searchResult, tools, deps, ini
     const pageResult = await deps.callMcpTool(getPageTool.function.name, pageArgs, { fallbackStep });
     attempts.push(summarizeAttempt(getPageTool.function.name, pageArgs, pageResult, fallbackStep));
     if (pageResult?.ok && !pageResult?.empty) {
-      return { result: pageResult, attempts };
+      const canonicalUrl = candidate?.url ?? candidate?.uri ?? candidate?.href ?? null;
+      return { result: pageResult, attempts, canonicalUrl };
     }
     fallbackStep += 1;
   }
@@ -453,10 +494,11 @@ export async function executeToolCallWithFallback(toolName, args, deps = {}) {
         attempts.push(...pageFetch.attempts);
         if (pageFetch.result?.ok && !pageFetch.result?.empty) {
           const result = attachAttemptMetadata(pageFetch.result, attempts);
+          const pageSourceUrls = pageFetch.canonicalUrl ? [pageFetch.canonicalUrl] : [];
           return {
             result,
             grounded: isGroundedToolResult(result),
-            sourceUrls: result.sources ?? [],
+            sourceUrls: pageSourceUrls,
             docsSearchAttempted: true,
           };
         }
@@ -465,7 +507,7 @@ export async function executeToolCallWithFallback(toolName, args, deps = {}) {
         return {
           result,
           grounded: isGroundedToolResult(result),
-          sourceUrls: result.sources ?? [],
+          sourceUrls: extractTopRankedSourceUrls(searchResult),
           docsSearchAttempted: true,
         };
       }
