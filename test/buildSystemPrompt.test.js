@@ -309,6 +309,15 @@ describe("sysprompt_remote.txt", () => {
       /"what is dolomite" → call gitbook-3 searchDocumentation with query "dolomite"/
     );
   });
+
+  test("includes CRITICAL function-calling reinforcement block", () => {
+    const prompt = readFileSync(
+      new URL("../sysprompt_remote.txt", import.meta.url),
+      "utf8"
+    );
+    assert.match(prompt, /CRITICAL: You MUST use the function calling API/);
+    assert.match(prompt, /CALL IT\. Do not describe calling it\./);
+  });
 });
 
 describe("sysprompt_local.txt", () => {
@@ -323,5 +332,14 @@ describe("sysprompt_local.txt", () => {
       prompt,
       /"what is dolomite" → call gitbook-3 searchDocumentation with query "dolomite"/
     );
+  });
+
+  test("includes CRITICAL function-calling reinforcement block", () => {
+    const prompt = readFileSync(
+      new URL("../sysprompt_local.txt", import.meta.url),
+      "utf8"
+    );
+    assert.match(prompt, /CRITICAL: You MUST use the function calling API/);
+    assert.match(prompt, /CALL IT\. Do not describe calling it\./);
   });
 });

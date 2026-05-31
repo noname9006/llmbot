@@ -813,4 +813,52 @@ describe("llamaWithToolsInternal()", () => {
     );
     assert.match(rounds[0].at(-1).content, /function calling API/i);
   });
+
+  test("injects format reminder on follow-up turns with more than 2 messages in context", async () => {
+    const logger = createLogger();
+    const tools = createDocsTools();
+    const capturedMessages = [];
+
+    await llamaWithToolsInternal(
+      "http://llama.test/v1",
+      [
+        { role: "system", content: "You are a helpful assistant." },
+        { role: "user", content: "what is dolomite" },
+        { role: "assistant", content: "Dolomite is a DeFi protocol." },
+        { role: "user", content: "how does it work exactly?" },
+      ],
+      {},
+      {
+        mcpEnabled: true,
+        getMcpTools: () => tools,
+        logger,
+        async callMcpTool(toolName) {
+          return {
+            ok: true,
+            empty: false,
+            data: { title: "Dolomite", snippet: "Dolomite lending mechanics.", url: "https://docs.example.com/dolomite" },
+            error: null,
+            tool: toolName,
+            meta: {},
+            sources: ["https://docs.example.com/dolomite"],
+          };
+        },
+        async llamaChatCompletion(baseUrl, messages) {
+          capturedMessages.push(...messages);
+          return {
+            content: "Dolomite works as a lending protocol.",
+            tool_calls: null,
+          };
+        },
+      }
+    );
+
+    const lastUserMsg = capturedMessages.filter((m) => m.role === "user").at(-1);
+    assert.ok(lastUserMsg, "expected a user message in captured messages");
+    assert.match(
+      lastUserMsg.content,
+      /function calling API/i,
+      "format reminder should be injected into the last user message even in multi-turn conversations"
+    );
+  });
 });

@@ -584,7 +584,6 @@ export async function llamaWithToolsInternal(baseUrl, messages, opts = {}, deps 
   const currentMessages = messages.map((message) => ({ ...message }));
   const lastMessage = currentMessages[currentMessages.length - 1];
   if (
-    currentMessages.length <= 2 &&
     lastMessage?.role === "user" &&
     typeof lastMessage.content === "string" &&
     !lastMessage.content.includes(TOOL_CALL_FORMAT_REMINDER)
