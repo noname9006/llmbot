@@ -204,6 +204,14 @@ function sanitizeRawPreview(text) {
     : compact;
 }
 
+function describeNormalizedDataShape(value, empty) {
+  if (empty || value == null) return "null";
+  if (Array.isArray(value)) return `array(${value.length})`;
+  if (typeof value === "string") return `string(${value.length})`;
+  if (typeof value === "object") return "object";
+  return `string(${String(value).length})`;
+}
+
 function isToolValueEmpty(value) {
   if (value == null) return true;
   if (typeof value === "string") return value.trim().length === 0;
@@ -501,6 +509,9 @@ export function normalizeMcpToolResponse(toolName, rawResult) {
     let data = pickToolPayload(rawResult);
 
     const empty = isToolValueEmpty(data);
+    logger.debug(
+      `[mcp] normalizeMcpToolResponse tool=${toolName} dataShape=${describeNormalizedDataShape(data, empty)} empty=${empty}`
+    );
     const parsedLength = empty ? 0 : safeJsonStringify(data).length;
     return {
       ok: true,

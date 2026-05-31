@@ -80,6 +80,16 @@ function safeJsonStringify(value) {
   }
 }
 
+function previewArrayForLog(values) {
+  if (!Array.isArray(values)) return "[]";
+  const preview = values.length > 3 ? [...values.slice(0, 3), "..."] : values;
+  return safeJsonStringify(preview);
+}
+
+function describeTrimDataShape(data) {
+  return Array.isArray(data) ? "array" : "object";
+}
+
 function truncateString(value, maxLength) {
   return value.length <= maxLength ? value : `${value.slice(0, maxLength)}…`;
 }
@@ -425,11 +435,6 @@ function extractTopRankedSourceUrls(searchResult) {
 
 async function maybeFetchDocsPage(searchToolName, searchResult, tools, deps, initialFallbackStep) {
   const { serverName } = splitToolName(searchToolName);
-  const getPageTool = tools.find((tool) =>
-    tool?._serverName === serverName && isDocsGetPageTool(tool?.function?.name)
-  );
-  if (!getPageTool) return { result: null, attempts: [] };
-
   const rawCandidates = extractPageCandidates(searchResult?.data);
   const uniqueCandidates = [];
   const seen = new Set();
@@ -438,6 +443,17 @@ async function maybeFetchDocsPage(searchToolName, searchResult, tools, deps, ini
     if (seen.has(key)) continue;
     seen.add(key);
     uniqueCandidates.push(candidate);
+  }
+  deps.logger.debug(
+    `[tool-call] maybeFetchDocsPage: ${uniqueCandidates.length} unique page candidates from search result`
+  );
+
+  const getPageTool = tools.find((tool) =>
+    tool?._serverName === serverName && isDocsGetPageTool(tool?.function?.name)
+  );
+  if (!getPageTool) {
+    deps.logger.debug(`[tool-call] maybeFetchDocsPage: no getPage tool found for server=${serverName} — skipping`);
+    return { result: null, attempts: [] };
   }
 
   const attempts = [];
@@ -457,6 +473,7 @@ async function maybeFetchDocsPage(searchToolName, searchResult, tools, deps, ini
     attempts.push(summarizeAttempt(getPageTool.function.name, pageArgs, pageResult, fallbackStep));
     if (pageResult?.ok && !pageResult?.empty) {
       const canonicalUrl = candidate?.url ?? candidate?.uri ?? candidate?.href ?? null;
+      deps.logger.debug(`[tool-call] getPage succeeded — canonicalUrl=${canonicalUrl}`);
       return { result: pageResult, attempts, canonicalUrl };
     }
     fallbackStep += 1;
@@ -482,8 +499,12 @@ export async function executeToolCallWithFallback(toolName, args, deps = {}) {
     callMcpTool: deps.callMcpTool ?? callMcpTool,
     logger: deps.logger ?? logger,
   };
+  const docsSearchTool = isDocsSearchTool(toolName);
+  effectiveDeps.logger.debug(
+    `[tool-call] executeToolCallWithFallback tool=${toolName} isDocsSearch=${docsSearchTool}`
+  );
 
-  if (!isDocsSearchTool(toolName)) {
+  if (!docsSearchTool) {
     const result = await effectiveDeps.callMcpTool(toolName, args, { fallbackStep: 0 });
     return {
       result,
@@ -494,7 +515,11 @@ export async function executeToolCallWithFallback(toolName, args, deps = {}) {
   }
 
   const queryVariants = buildDocsQueryVariants(args?.query);
+  effectiveDeps.logger.debug(`[tool-call] query variants: ${previewArrayForLog(queryVariants)}`);
   const searchTools = getDocsSearchToolCandidates(toolName, effectiveDeps.tools);
+  effectiveDeps.logger.debug(
+    `[tool-call] search tool candidates (${searchTools.length}): ${previewArrayForLog(searchTools)}`
+  );
   const attempts = [];
   let fallbackStep = 0;
   let lastError = null;
@@ -536,12 +561,23 @@ export async function executeToolCallWithFallback(toolName, args, deps = {}) {
           };
         }
 
+        effectiveDeps.logger.debug(
+          "[tool-call] getPage unavailable or failed — using trimmed search result (fallback path)"
+        );
         const trimmedSearchResult = trimSearchResultData(searchResult, MAX_SEARCH_RESULT_ITEMS);
+        const trimChanged = safeJsonStringify(trimmedSearchResult?.data) !== safeJsonStringify(searchResult?.data);
+        effectiveDeps.logger.debug(
+          `[tool-call] trimSearchResultData: maxItems=${MAX_SEARCH_RESULT_ITEMS} data shape=${describeTrimDataShape(searchResult?.data)} changed=${trimChanged}`
+        );
+        const sourceUrls = extractTopRankedSourceUrls(searchResult);
+        effectiveDeps.logger.debug(
+          `[tool-call] extractTopRankedSourceUrls: picked ${sourceUrls.length} url(s): ${previewArrayForLog(sourceUrls)}`
+        );
         const result = attachAttemptMetadata(trimmedSearchResult, attempts);
         return {
           result,
           grounded: isGroundedToolResult(result),
-          sourceUrls: extractTopRankedSourceUrls(searchResult),
+          sourceUrls,
           docsSearchAttempted: true,
         };
       }
@@ -589,6 +625,9 @@ export async function llamaWithToolsInternal(baseUrl, messages, opts = {}, deps 
     logger: deps.logger ?? logger,
   };
   const tools = effectiveDeps.getMcpTools();
+  effectiveDeps.logger.debug(
+    `[tool-call] llamaWithTools url=${baseUrl} mcpEnabled=${effectiveDeps.mcpEnabled} tools=${tools.length}`
+  );
 
   if (!effectiveDeps.mcpEnabled || tools.length === 0) {
     const { content } = await effectiveDeps.llamaChatCompletion(baseUrl, messages, opts, []);
@@ -704,6 +743,7 @@ export async function llamaWithToolsInternal(baseUrl, messages, opts = {}, deps 
 
       for (const sourceUrl of toolOutcome.sourceUrls ?? []) {
         sourceUrls.add(sourceUrl);
+        effectiveDeps.logger.debug(`[tool-call] collected sourceUrl: ${sourceUrl}`);
       }
       if (toolOutcome.docsSearchAttempted) {
         docsSearchAttempted = true;
