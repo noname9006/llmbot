@@ -7,7 +7,7 @@ const MAX_TOOL_ROUNDS = 5;
 const MAX_TOOL_RESULT_CHARS = 8_000;
 const MAX_EVIDENCE_DEPTH = 6;
 const MAX_SEARCH_RESULT_ITEMS = 2;
-const HOMEPAGE_FALLBACK_VALUES = ["/", "index", "home", ""];
+const HOMEPAGE_FALLBACK_VALUES = ["index", "home", ""];
 const DOC_SEARCH_TOOL_RE = /(?:^|__)searchDocumentation$/i;
 const DOC_GET_PAGE_TOOL_RE = /(?:^|__)getPage$/i;
 const SEARCH_RESULT_COLLECTION_KEYS = ["results", "items", "hits", "pages", "documents", "entries"];
@@ -322,6 +322,13 @@ function getDocsSearchToolCandidates(toolName, tools) {
 
 function extractPageCandidates(value, candidates = [], depth = 0) {
   if (depth > MAX_EVIDENCE_DEPTH || value == null) return candidates;
+  if (typeof value === "string") {
+    const linkMatches = value.matchAll(/^Link:\s*(https?:\/\/[^\s]+)\s*$/gim);
+    for (const match of linkMatches) {
+      candidates.push({ url: match[1] });
+    }
+    return candidates;
+  }
   if (Array.isArray(value)) {
     for (const item of value) extractPageCandidates(item, candidates, depth + 1);
     return candidates;

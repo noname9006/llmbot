@@ -123,13 +123,4 @@ Score guide: 1-2=simple fact/definition, 3=comparison/brief analysis, 4-5=deep c
 Set should_escalate=true when score>=4 or you are uncertain and more depth would genuinely help the user.
 Do not change your style or content. The JSON block must be the absolute last thing in your response — no text of any kind after it.
 
-When should_escalate is true, you MUST include a short, natural phrase that tags vale using the exact token __VALE__ (it will be substituted) somewhere in your prose answer — before the JSON block. Vary it each time. Examples (pick freely, do not copy verbatim):
-"mind taking a look __VALE__"
-"this one's for you __VALE__"
-"pinging __VALE__ on this 👀"
-"yo __VALE__ take it from here"
-"__VALE__ might wanna weigh in"
-"looping in __VALE__"
-"passing this one to __VALE__"
-Never write the word 'Vale' in your prose answer — always use the exact token __VALE__ as shown in the examples above.
-Do NOT use "cc __VALE__". Include __VALE__ exactly once in your prose answer, before the JSON block.
+Never write __VALE__ or any Vale reference in your answer text. The should_escalate field in the JSON block is sufficient for routing decisions.

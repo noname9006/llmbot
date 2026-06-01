@@ -381,7 +381,7 @@ describe("executeToolCallWithFallback()", () => {
               sources: ["https://docs.example.com"],
             };
           }
-          if (toolName === "gitbook-2__getPage" && args.path === "/") {
+          if (toolName === "gitbook-2__getPage" && args.path === "index") {
             return {
               ok: true,
               empty: false,
@@ -401,7 +401,7 @@ describe("executeToolCallWithFallback()", () => {
       calls.map((call) => ({ toolName: call.toolName, args: call.args })),
       [
         { toolName: "gitbook-2__searchDocumentation", args: { query: "what is dolomite" } },
-        { toolName: "gitbook-2__getPage", args: { path: "/" } },
+        { toolName: "gitbook-2__getPage", args: { path: "index" } },
       ]
     );
     assert.equal(result.result.tool, "gitbook-2__getPage");
@@ -421,9 +421,67 @@ describe("executeToolCallWithFallback()", () => {
       logger.entries.some(
         (entry) =>
           entry.message.includes('"strategy":"getPage-homepage"') &&
-          entry.message.includes('"path":"/"')
+          entry.message.includes('"path":"index"')
       ),
       "expected homepage docs-fallback log"
+    );
+  });
+
+  test("extracts page candidates from text-format search results via Link: lines", async () => {
+    const logger = createLogger();
+    const calls = [];
+    const result = await executeToolCallWithFallback(
+      "gitbook-2__searchDocumentation",
+      { query: "plutusdao plvglp" },
+      {
+        tools: createDocsTools(),
+        logger,
+        async callMcpTool(toolName, args) {
+          calls.push({ toolName, args });
+          if (toolName === "gitbook-2__searchDocumentation") {
+            return {
+              ok: true,
+              empty: false,
+              data: {
+                content: [
+                  {
+                    text:
+                      "Title: PlutusDAO - plvGLP\n" +
+                      "Link: https://docs.dolomite.io/integrations/plutusdao-plvglp\n" +
+                      "Content: Dolomite integration docs",
+                  },
+                ],
+              },
+              error: null,
+              tool: toolName,
+              meta: {},
+              sources: ["https://docs.dolomite.io/integrations/plutusdao-plvglp"],
+            };
+          }
+          if (toolName === "gitbook-2__getPage") {
+            assert.deepEqual(args, { path: "https://docs.dolomite.io/integrations/plutusdao-plvglp" });
+            return {
+              ok: true,
+              empty: false,
+              data: { title: "PlutusDAO - plvGLP", content: "Docs page content" },
+              error: null,
+              tool: toolName,
+              meta: {},
+              sources: ["https://docs.dolomite.io/integrations/plutusdao-plvglp"],
+            };
+          }
+          throw new Error(`Unexpected tool call: ${toolName} ${JSON.stringify(args)}`);
+        },
+      }
+    );
+
+    assert.equal(calls[1].toolName, "gitbook-2__getPage");
+    assert.equal(result.result.tool, "gitbook-2__getPage");
+    assert.ok(
+      logger.entries.some((entry) =>
+        entry.message.includes("[tool-call] maybeFetchDocsPage: 1 unique page candidates from search result")
+      ),
+      "expected non-zero candidate log"
     );
   });
 

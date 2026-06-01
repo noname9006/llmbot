@@ -77,15 +77,6 @@ export function buildEscalationInstruction() {
     `would genuinely help the user.\n` +
     `Do not change your style or content. The JSON block must be the absolute last ` +
     `thing in your response — no text of any kind after it.\n\n` +
-    `When should_escalate is true, you MUST include a short, natural phrase that tags vale using the exact token __VALE__ (it will be substituted) somewhere in your prose answer — before the JSON block. Vary it each time. Examples (pick freely, do not copy verbatim):\n` +
-    `"mind taking a look __VALE__"\n` +
-    `"this one's for you __VALE__"\n` +
-    `"pinging __VALE__ on this 👀"\n` +
-    `"yo __VALE__ take it from here"\n` +
-    `"__VALE__ might wanna weigh in"\n` +
-    `"looping in __VALE__"\n` +
-    `"passing this one to __VALE__"\n` +
-    `Never write the word 'Vale' in your prose answer — always use the exact token __VALE__ as shown in the examples above.\n` +
-    `Do NOT use "cc __VALE__". Include __VALE__ exactly once in your prose answer, before the JSON block.`
+    `Never write __VALE__ or any Vale reference in your answer text. The should_escalate field in the JSON block is sufficient for routing decisions.`
   );
 }

@@ -318,6 +318,18 @@ describe("sysprompt_remote.txt", () => {
     assert.match(prompt, /CRITICAL: You MUST use the function calling API/);
     assert.match(prompt, /CALL IT\. Do not describe calling it\./);
   });
+
+  test("forbids __VALE__ token references in prose instructions", () => {
+    const prompt = readFileSync(
+      new URL("../sysprompt_remote.txt", import.meta.url),
+      "utf8"
+    );
+    assert.match(
+      prompt,
+      /Never write __VALE__ or any Vale reference in your answer text\./
+    );
+    assert.doesNotMatch(prompt, /Do NOT use "cc __VALE__"/);
+  });
 });
 
 describe("sysprompt_local.txt", () => {
