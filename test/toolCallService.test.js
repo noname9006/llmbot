@@ -123,7 +123,7 @@ describe("executeToolCallWithFallback()", () => {
       "expected search tool candidates log"
     );
     assert.ok(
-      logger.entries.some((entry) => entry.message.includes("[tool-call] maybeFetchDocsPage: 1 unique page candidates")),
+      logger.entries.some((entry) => entry.message.includes("[tool-call] maybeFetchDocsPage: 1 ranked page candidates")),
       "expected maybeFetchDocsPage candidate count log"
     );
     assert.ok(
@@ -447,27 +447,27 @@ describe("executeToolCallWithFallback()", () => {
                   {
                     text:
                       "Title: PlutusDAO - plvGLP\n" +
-                      "Link: https://docs.dolomite.io/integrations/plutusdao-plvglp\n" +
-                      "Content: Dolomite integration docs",
+                      "Link: https://docs.example.com/integrations/partner-vault\n" +
+                      "Content: Example protocol integration docs",
                   },
                 ],
               },
               error: null,
               tool: toolName,
               meta: {},
-              sources: ["https://docs.dolomite.io/integrations/plutusdao-plvglp"],
+              sources: ["https://docs.example.com/integrations/partner-vault"],
             };
           }
           if (toolName === "gitbook-2__getPage") {
-            assert.deepEqual(args, { path: "https://docs.dolomite.io/integrations/plutusdao-plvglp" });
+            assert.deepEqual(args, { path: "https://docs.example.com/integrations/partner-vault" });
             return {
               ok: true,
               empty: false,
-              data: { title: "PlutusDAO - plvGLP", content: "Docs page content" },
+              data: { title: "Partner vault", content: "Docs page content" },
               error: null,
               tool: toolName,
               meta: {},
-              sources: ["https://docs.dolomite.io/integrations/plutusdao-plvglp"],
+              sources: ["https://docs.example.com/integrations/partner-vault"],
             };
           }
           throw new Error(`Unexpected tool call: ${toolName} ${JSON.stringify(args)}`);
@@ -479,10 +479,120 @@ describe("executeToolCallWithFallback()", () => {
     assert.equal(result.result.tool, "gitbook-2__getPage");
     assert.ok(
       logger.entries.some((entry) =>
-        entry.message.includes("[tool-call] maybeFetchDocsPage: 1 unique page candidates from search result")
+        entry.message.includes("[tool-call] maybeFetchDocsPage: 1 ranked page candidates")
       ),
       "expected non-zero candidate log"
     );
+  });
+
+  test("ranks homepage-like page above integration for broad what-is queries", async () => {
+    const logger = createLogger();
+    const calls = [];
+    const searchText =
+      "Title: Partner integration\n" +
+      "Link: https://docs.example.com/integrations/partner-vault\n" +
+      "Content: Example protocol integration with partner vaults\n\n" +
+      "Title: Example Protocol\n" +
+      "Link: https://docs.example.com/\n" +
+      "Content: Example combines lending and trading in one platform\n";
+
+    await executeToolCallWithFallback(
+      "gitbook-2__searchDocumentation",
+      { query: "what is example" },
+      {
+        tools: createDocsTools(),
+        logger,
+        async callMcpTool(toolName, args) {
+          calls.push({ toolName, args });
+          if (toolName === "gitbook-2__searchDocumentation") {
+            return {
+              ok: true,
+              empty: false,
+              data: { content: [{ type: "text", text: searchText }] },
+              error: null,
+              tool: toolName,
+              meta: {},
+              sources: [
+                "https://docs.example.com/integrations/partner-vault",
+                "https://docs.example.com/",
+              ],
+            };
+          }
+          if (toolName === "gitbook-2__getPage") {
+            assert.equal(args.path, "https://docs.example.com/");
+            return {
+              ok: true,
+              empty: false,
+              data: { title: "Example Protocol", content: "Overview page" },
+              error: null,
+              tool: toolName,
+              meta: {},
+              sources: ["https://docs.example.com/"],
+            };
+          }
+          throw new Error(`Unexpected tool call: ${toolName} ${JSON.stringify(args)}`);
+        },
+      }
+    );
+
+    assert.equal(calls[1].toolName, "gitbook-2__getPage");
+    assert.ok(
+      logger.entries.some((entry) =>
+        entry.message.includes("ranked page candidates") &&
+        entry.message.includes("docs.example.com/") &&
+        entry.message.includes("partner-vault")
+      ),
+      "expected ranked candidates log with both URLs"
+    );
+  });
+
+  test("ranks index slug homepage above deep pages for broad queries", async () => {
+    const calls = [];
+    const searchText =
+      "Title: Campaign level 4\n" +
+      "Link: https://docs.example.com/campaigns/level-4\n" +
+      "Content: Campaign mechanics\n\n" +
+      "Title: Docs Home\n" +
+      "Link: https://docs.example.com/index\n" +
+      "Content: Welcome to the protocol overview\n";
+
+    await executeToolCallWithFallback(
+      "gitbook-2__searchDocumentation",
+      { query: "what is example" },
+      {
+        tools: createDocsTools(),
+        logger: createLogger(),
+        async callMcpTool(toolName, args) {
+          calls.push({ toolName, args });
+          if (toolName === "gitbook-2__searchDocumentation") {
+            return {
+              ok: true,
+              empty: false,
+              data: { content: [{ type: "text", text: searchText }] },
+              error: null,
+              tool: toolName,
+              meta: {},
+              sources: [],
+            };
+          }
+          if (toolName === "gitbook-2__getPage") {
+            assert.equal(args.path, "https://docs.example.com/index");
+            return {
+              ok: true,
+              empty: false,
+              data: { title: "Docs Home", content: "Overview" },
+              error: null,
+              tool: toolName,
+              meta: {},
+              sources: ["https://docs.example.com/index"],
+            };
+          }
+          throw new Error(`Unexpected tool call: ${toolName}`);
+        },
+      }
+    );
+
+    assert.equal(calls[1].toolName, "gitbook-2__getPage");
   });
 
   test("trims fallback GitBook content arrays to top 2 when getPage is unavailable", async () => {

@@ -41,6 +41,17 @@ const DOC_QUERY_STOPWORDS = new Set([
   "to",
 ]);
 const PAGE_CANDIDATE_KEYS = ["path", "pagePath", "slug", "id", "url", "uri", "href"];
+const PATH_PENALTY_RULES = [
+  { pattern: /\/integrations\//i, penalty: 3 },
+  { pattern: /\/governance\b/i, penalty: 2 },
+  { pattern: /\/campaigns\//i, penalty: 2 },
+];
+const OVERVIEW_PATH_BONUS_RE = /\/(introduction|overview|getting-started)\b/i;
+const OVERVIEW_TEXT_SIGNAL_RE = /\b(protocol|platform|combines|overview|introduction|dex|lending)\b/i;
+const BROAD_OVERVIEW_QUERY_RE = /^\s*(what is|what's|tell me about|explain|overview of)\b/i;
+const SPECIFIC_DOCS_QUERY_RE =
+  /\b(how (does|do|to)|mechanism|steps|integrat|vault|plvglp|lending on)\b/i;
+const MAX_RANKED_CANDIDATES_LOG = 5;
 
 /** Patterns that indicate the model is narrating a future tool call instead of making one. */
 const STALLING_PATTERNS = [
@@ -320,6 +331,237 @@ function getDocsSearchToolCandidates(toolName, tools) {
   });
 }
 
+function normalizeQueryTokens(query) {
+  return String(query ?? "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s-]+/gu, " ")
+    .split(/\s+/)
+    .filter((token) => token && !DOC_QUERY_STOPWORDS.has(token));
+}
+
+function isBroadOverviewQuery(query) {
+  const text = String(query ?? "").trim();
+  return BROAD_OVERVIEW_QUERY_RE.test(text) && !SPECIFIC_DOCS_QUERY_RE.test(text);
+}
+
+function getUrlPathname(url) {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return String(url ?? "");
+  }
+}
+
+/** True for site root or homepage slugs used by getPage fallback (index, home). */
+function isHomepageLikePath(pathname) {
+  const normalized = String(pathname ?? "").replace(/\/+$/, "") || "/";
+  if (normalized === "/") return true;
+  const segments = normalized.split("/").filter(Boolean);
+  if (segments.length === 0) return true;
+  if (segments.length === 1) {
+    const slug = segments[0].toLowerCase();
+    return slug === "index" || slug === "home";
+  }
+  return false;
+}
+
+/**
+ * @param {string} text
+ * @param {number} startRank
+ * @returns {Array<{ title?: string, url: string, snippet?: string, rank: number }>}
+ */
+function parseSearchHitsFromText(text, startRank = 0) {
+  const hits = [];
+  if (!text?.trim()) return hits;
+
+  const blocks = text.split(/\n(?=Title:\s)/i).filter((block) => block.trim());
+  let rank = startRank;
+
+  for (const block of blocks) {
+    const titleMatch = block.match(/^Title:\s*(.+?)(?:\n|$)/im);
+    const linkMatch = block.match(/^Link:\s*(https?:\/\/[^\s]+)\s*$/im);
+    const contentMatch = block.match(/^Content:\s*([\s\S]*?)(?=\nTitle:|\s*$)/im);
+    if (!linkMatch) continue;
+    hits.push({
+      title: titleMatch?.[1]?.trim(),
+      url: linkMatch[1].trim(),
+      snippet: contentMatch?.[1]?.trim(),
+      rank,
+    });
+    rank += 1;
+  }
+
+  return hits;
+}
+
+/**
+ * @param {unknown} data
+ * @returns {Array<{ title?: string, url: string, snippet?: string, rank: number }>}
+ */
+function parseSearchHitsFromData(data) {
+  const hits = [];
+
+  const addStructuredHit = (item, rank) => {
+    const url = [item?.url, item?.uri, item?.href].find(
+      (value) => typeof value === "string" && /^https?:\/\//i.test(value.trim())
+    );
+    if (!url) return;
+    hits.push({
+      title: typeof item?.title === "string" ? item.title.trim() : undefined,
+      url: url.trim(),
+      snippet: [item?.snippet, item?.summary, item?.content, item?.text]
+        .find((value) => typeof value === "string" && value.trim())
+        ?.trim(),
+      rank,
+    });
+  };
+
+  const walk = (value, depth = 0) => {
+    if (depth > MAX_EVIDENCE_DEPTH || value == null) return;
+    if (typeof value === "string") {
+      hits.push(...parseSearchHitsFromText(value, hits.length));
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const [index, item] of value.entries()) {
+        if (item && typeof item === "object" && !Array.isArray(item)) {
+          const url = [item.url, item.uri, item.href].find(
+            (candidate) => typeof candidate === "string" && /^https?:\/\//i.test(candidate.trim())
+          );
+          if (url) {
+            addStructuredHit(item, hits.length + index);
+            continue;
+          }
+          if (typeof item.text === "string") {
+            hits.push(...parseSearchHitsFromText(item.text, hits.length));
+            continue;
+          }
+        }
+        walk(item, depth + 1);
+      }
+      return;
+    }
+    if (typeof value !== "object") return;
+
+    for (const key of SEARCH_RESULT_COLLECTION_KEYS) {
+      if (Array.isArray(value[key])) {
+        for (const [index, item] of value[key].entries()) {
+          if (item && typeof item === "object") {
+            addStructuredHit(item, hits.length + index);
+          }
+        }
+      }
+    }
+
+    if (Array.isArray(value.content)) {
+      for (const item of value.content) {
+        if (typeof item === "string") {
+          hits.push(...parseSearchHitsFromText(item, hits.length));
+        } else if (item && typeof item === "object" && typeof item.text === "string") {
+          hits.push(...parseSearchHitsFromText(item.text, hits.length));
+        }
+      }
+    }
+
+    for (const [key, child] of Object.entries(value)) {
+      if (key === "content" || SEARCH_RESULT_COLLECTION_KEYS.includes(key)) continue;
+      walk(child, depth + 1);
+    }
+  };
+
+  walk(data);
+  return dedupeSearchHits(hits);
+}
+
+/**
+ * @param {Array<{ title?: string, url: string, snippet?: string, rank: number }>} hits
+ * @returns {Array<{ title?: string, url: string, snippet?: string, rank: number }>}
+ */
+function dedupeSearchHits(hits) {
+  const byUrl = new Map();
+  for (const hit of hits) {
+    const key = hit.url.toLowerCase();
+    const existing = byUrl.get(key);
+    if (
+      !existing ||
+      hit.rank < existing.rank ||
+      ((hit.title || hit.snippet) && !(existing.title || existing.snippet))
+    ) {
+      byUrl.set(key, hit);
+    }
+  }
+  return [...byUrl.values()].sort((left, right) => left.rank - right.rank);
+}
+
+/**
+ * @param {{ title?: string, url: string, snippet?: string, rank: number }} hit
+ * @param {string} query
+ * @returns {number}
+ */
+function scoreSearchHit(hit, query) {
+  let score = 0;
+  const tokens = normalizeQueryTokens(query);
+  const path = getUrlPathname(hit.url);
+  const segments = path.split("/").filter(Boolean);
+  const depth = segments.length;
+  const titleLower = (hit.title ?? "").toLowerCase();
+  const snippetLower = (hit.snippet ?? "").toLowerCase();
+
+  for (const token of tokens) {
+    if (titleLower.includes(token)) score += 3;
+    if (snippetLower.includes(token)) score += 1;
+    if (segments.some((segment) => segment.toLowerCase().includes(token))) score += 2;
+  }
+
+  score += Math.max(0, 4 - depth);
+
+  for (const { pattern, penalty } of PATH_PENALTY_RULES) {
+    if (pattern.test(path)) score -= penalty;
+  }
+
+  if (isHomepageLikePath(path)) score += 6;
+  else if (OVERVIEW_PATH_BONUS_RE.test(path)) score += 4;
+
+  if (isBroadOverviewQuery(query)) {
+    if (OVERVIEW_TEXT_SIGNAL_RE.test(hit.title ?? "")) score += 2;
+    if (OVERVIEW_TEXT_SIGNAL_RE.test(hit.snippet ?? "")) score += 1;
+    if (/\/integrations\//i.test(path)) score -= 2;
+  }
+
+  score += Math.max(0, 10 - hit.rank) * 0.2;
+  return score;
+}
+
+/**
+ * @param {Array<{ title?: string, url: string, snippet?: string, rank: number }>} hits
+ * @param {string} query
+ * @returns {Array<{ title?: string, url: string, snippet?: string, rank: number, score: number }>}
+ */
+function rankSearchHits(hits, query) {
+  return hits
+    .map((hit) => ({ ...hit, score: scoreSearchHit(hit, query) }))
+    .sort((left, right) => right.score - left.score || left.rank - right.rank);
+}
+
+function previewRankedHitsForLog(rankedHits, limit = MAX_RANKED_CANDIDATES_LOG) {
+  return rankedHits
+    .slice(0, limit)
+    .map((hit) => `${hit.score.toFixed(1)}:${hit.url}`)
+    .join(", ");
+}
+
+/**
+ * @param {{ title?: string, url: string, snippet?: string }} hit
+ * @returns {{ url: string, uri: string, href: string, path?: string, pagePath?: string }}
+ */
+function searchHitToPageCandidate(hit) {
+  return {
+    url: hit.url,
+    uri: hit.url,
+    href: hit.url,
+  };
+}
+
 function extractPageCandidates(value, candidates = [], depth = 0) {
   if (depth > MAX_EVIDENCE_DEPTH || value == null) return candidates;
   if (typeof value === "string") {
@@ -390,20 +632,31 @@ function extractTopRankedSourceUrls(searchResult) {
   return [];
 }
 
-async function maybeFetchDocsPage(searchToolName, searchResult, tools, deps, initialFallbackStep) {
+async function maybeFetchDocsPage(searchToolName, searchResult, tools, deps, initialFallbackStep, query = "") {
   const { serverName } = splitToolName(searchToolName);
-  const rawCandidates = extractPageCandidates(searchResult?.data);
-  const uniqueCandidates = [];
-  const seen = new Set();
-  for (const candidate of rawCandidates) {
+  const legacyCandidates = [];
+  const legacySeen = new Set();
+  for (const candidate of extractPageCandidates(searchResult?.data)) {
     const key = safeJsonStringify(candidate);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    uniqueCandidates.push(candidate);
+    if (legacySeen.has(key)) continue;
+    legacySeen.add(key);
+    legacyCandidates.push(candidate);
   }
-  deps.logger.debug(
-    `[tool-call] maybeFetchDocsPage: ${uniqueCandidates.length} unique page candidates from search result`
-  );
+
+  const parsedHits = parseSearchHitsFromData(searchResult?.data);
+  const rankedHits = parsedHits.length > 0 ? rankSearchHits(parsedHits, query) : [];
+  const uniqueCandidates = rankedHits.length > 0
+    ? rankedHits.map(searchHitToPageCandidate)
+    : legacyCandidates;
+  if (rankedHits.length > 0) {
+    deps.logger.debug(
+      `[tool-call] maybeFetchDocsPage: ${uniqueCandidates.length} ranked page candidates (query=${JSON.stringify(String(query).slice(0, 80))}): ${previewRankedHitsForLog(rankedHits)}`
+    );
+  } else {
+    deps.logger.debug(
+      `[tool-call] maybeFetchDocsPage: ${uniqueCandidates.length} unique page candidates from search result (legacy extract, unranked)`
+    );
+  }
 
   const getPageTool = tools.find((tool) =>
     tool?._serverName === serverName && isDocsGetPageTool(tool?.function?.name)
@@ -538,7 +791,8 @@ export async function executeToolCallWithFallback(toolName, args, deps = {}) {
           searchResult,
           effectiveDeps.tools,
           effectiveDeps,
-          fallbackStep + 1
+          fallbackStep + 1,
+          searchArgs.query
         );
         attempts.push(...pageFetch.attempts);
         if (pageFetch.result?.ok && !pageFetch.result?.empty) {
