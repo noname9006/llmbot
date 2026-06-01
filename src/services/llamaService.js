@@ -1,6 +1,7 @@
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 import { withRetry } from "../utils/retry.js";
+import { toolsForApiPayload } from "../utils/contextBudget.js";
 
 /**
  * Calls a llama-server OpenAI-compatible /v1/chat/completions endpoint.
@@ -21,7 +22,7 @@ export async function llamaChatCompletion(baseUrl, messages, opts = {}, tools = 
     messages,
     stream: false,
     ...bodyOpts,
-    ...(tools.length > 0 ? { tools, tool_choice: "auto" } : {}),
+    ...(tools.length > 0 ? { tools: toolsForApiPayload(tools), tool_choice: "auto" } : {}),
   };
 
   // Per-call timeout takes priority; falls back to global config.

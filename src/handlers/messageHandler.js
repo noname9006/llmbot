@@ -29,6 +29,7 @@ import {
 function modelOpts(role) {
   const capRole = role[0].toUpperCase() + role.slice(1); // "Remote" | "Local"
   const params  = config.llama[`params${capRole}`];
+  const contextSizeKey = role === "remote" ? "contextSizeRemote" : "contextSizeLocal";
   return {
     temperature:    params.temperature,
     top_p:          params.topP,
@@ -38,6 +39,7 @@ function modelOpts(role) {
     max_tokens:     params.maxTokens > 0 ? params.maxTokens : -1,
     ...(params.reasoningBudget >= 0 ? { budget_tokens: params.reasoningBudget } : {}),
     fetchTimeout:   config.llama[`fetchTimeout${capRole}`],
+    contextSize:    config.llama[contextSizeKey],
   };
 }
 

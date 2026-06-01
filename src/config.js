@@ -562,6 +562,10 @@ export const config = {
     enabled: optional("MCP_ENABLED", "false") === "true",
     servers: buildMcpServers(),
   },
+  contextTrim: {
+    safetyMargin: parseInt(optional("CONTEXT_TRIM_SAFETY_MARGIN", "512"), 10),
+    minMessageBudget: parseInt(optional("CONTEXT_TRIM_MIN_MESSAGE_BUDGET", "512"), 10),
+  },
   docs: {
     // After docs search: "auto" (broad + good snippets → digest, else getPage),
     // "snippets" (never auto-getPage), "getPage" (always fetch full page when possible).

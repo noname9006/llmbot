@@ -420,8 +420,10 @@ Copy `.env.example` to `.env` and edit it. Variables marked **required** have no
 | `LLAMA_EXTRA_ARGS_REMOTE` | falls back to `LLAMA_EXTRA_ARGS` | Extra args for remote role |
 | `LLAMA_EXTRA_ARGS_LOCAL` | falls back to `LLAMA_EXTRA_ARGS` | Extra args for local role |
 | `LLAMA_CONTEXT_SIZE` | `0` | Global fallback context size (`0` = model default) |
-| `LLAMA_CONTEXT_SIZE_REMOTE` | falls back to `LLAMA_CONTEXT_SIZE` | Context size for remote role |
+| `LLAMA_CONTEXT_SIZE_REMOTE` | falls back to `LLAMA_CONTEXT_SIZE` | Context size for remote role (must match `llama-server -c`; also drives per-round tool-call trimming) |
 | `LLAMA_CONTEXT_SIZE_LOCAL` | falls back to `LLAMA_CONTEXT_SIZE` | Context size for local role |
+| `CONTEXT_TRIM_SAFETY_MARGIN` | `512` | Extra token reserve subtracted from `n_ctx` before each tool-calling LLM round |
+| `CONTEXT_TRIM_MIN_MESSAGE_BUDGET` | `512` | Floor for the computed messages budget after reserves |
 | `LLM_FETCH_TIMEOUT_MS` | `120000` | Global fallback timeout for `/chat/completions` |
 | `LLM_FETCH_TIMEOUT_MS_REMOTE` | falls back to `LLM_FETCH_TIMEOUT_MS` | Fetch timeout for remote role |
 | `LLM_FETCH_TIMEOUT_MS_LOCAL` | falls back to `LLM_FETCH_TIMEOUT_MS` | Fetch timeout for local role |

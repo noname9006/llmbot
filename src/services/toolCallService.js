@@ -2,6 +2,7 @@ import { config } from "../config.js";
 import { logger } from "../logger.js";
 import { getMcpTools, callMcpTool } from "./mcpService.js";
 import { llamaChatCompletion } from "./llamaService.js";
+import { trimMessagesForContext } from "./contextTrim.js";
 
 const MAX_TOOL_ROUNDS = 5;
 const MAX_TOOL_RESULT_CHARS = 8_000;
@@ -70,6 +71,27 @@ const STALLING_PATTERNS = [
 function looksLikeStalling(content) {
   if (!content) return false;
   return STALLING_PATTERNS.some((re) => re.test(content));
+}
+
+function resolveContextSize(baseUrl, opts = {}) {
+  const fromOpts = Number(opts.contextSize);
+  if (fromOpts > 0) return fromOpts;
+  if (baseUrl === config.llama.remoteUrl) return config.llama.contextSizeRemote;
+  if (baseUrl === config.llama.localUrl) return config.llama.contextSizeLocal;
+  return 0;
+}
+
+function resolveMaxTokensOut(baseUrl, opts = {}) {
+  const fromOpts = Number(opts.max_tokens);
+  if (fromOpts > 0) return fromOpts;
+  const params =
+    baseUrl === config.llama.remoteUrl
+      ? config.llama.paramsRemote
+      : baseUrl === config.llama.localUrl
+        ? config.llama.paramsLocal
+        : null;
+  if (params?.maxTokens > 0) return params.maxTokens;
+  return 512;
 }
 
 function sanitizeToolErrorMessage(err) {
@@ -1072,8 +1094,29 @@ export async function llamaWithToolsInternal(baseUrl, messages, opts = {}, deps 
   let docsSearchAttempted = false;
   let groundedDocsFound = false;
   let docsToolFallbackInjected = false;
+  let firstToolAssistantIndex = null;
+  const nCtx = resolveContextSize(baseUrl, opts);
+  const maxTokensOut = resolveMaxTokensOut(baseUrl, opts);
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const trimResult = trimMessagesForContext({
+      messages: currentMessages,
+      tools,
+      nCtx,
+      maxTokensOut,
+      firstToolAssistantIndex,
+      logger: effectiveDeps.logger,
+      round: round + 1,
+    });
+    currentMessages.length = 0;
+    currentMessages.push(...trimResult.messages);
+    if (trimResult.stats.estBefore > trimResult.stats.messageBudget && trimResult.stats.messageBudget > 0) {
+      effectiveDeps.logger.debug(
+        `[tool-call] context-trim round=${round + 1} estBefore=${trimResult.stats.estBefore} ` +
+          `estAfter=${trimResult.stats.estAfter} budget=${trimResult.stats.messageBudget}`
+      );
+    }
+
     const { content, tool_calls } = await effectiveDeps.llamaChatCompletion(baseUrl, currentMessages, opts, tools);
 
     effectiveDeps.logger.debug(`[tool-call] round=${round + 1} tool_calls=${tool_calls?.length ?? 0}`);
@@ -1121,6 +1164,9 @@ export async function llamaWithToolsInternal(baseUrl, messages, opts = {}, deps 
       content: content ?? null,
       tool_calls,
     });
+    if (firstToolAssistantIndex === null) {
+      firstToolAssistantIndex = currentMessages.length - 1;
+    }
 
     for (const tc of tool_calls) {
       let args;
@@ -1204,6 +1250,17 @@ export async function llamaWithToolsInternal(baseUrl, messages, opts = {}, deps 
   if (docsSearchAttempted && !groundedDocsFound && !docsToolFallbackInjected) {
     return DOC_NO_RESULTS_MESSAGE;
   }
+  const finalTrim = trimMessagesForContext({
+    messages: currentMessages,
+    tools: [],
+    nCtx,
+    maxTokensOut,
+    firstToolAssistantIndex,
+    logger: effectiveDeps.logger,
+    round: "final",
+  });
+  currentMessages.length = 0;
+  currentMessages.push(...finalTrim.messages);
   const { content } = await effectiveDeps.llamaChatCompletion(baseUrl, currentMessages, opts, []);
   return appendToolSourcesToFinalResponse(content, sourceUrls);
 }
