@@ -232,7 +232,8 @@ export async function onRemoteMessage(message, remoteClient, localClient) {
     // null is returned on the handoff path — the local bot owns that exchange
     // and will push its own assistant turn under the same historyUserId.
     if (fullResponse !== null) {
-      historyService.pushAssistant(message.author.id, fullResponse);
+      const cleanedForHistory = stripSignals(fullResponse);
+      historyService.pushAssistant(message.author.id, cleanedForHistory);
     }
   } catch (err) {
     logger.error(`[${reqId}] Error during LLM completion:`, err);
@@ -480,34 +481,6 @@ export async function onLocalDirectMessage(message, localClient) {
 
 
 
-const VALE_PLACEHOLDER = "__VALE__";
-
-const FALLBACK_HANDOFF_PHRASES = [
-  "mind taking a look",
-  "this one's for you",
-  "pinging",
-  "looping in",
-  "passing this to",
-  "yo — take it from here",
-];
-
-function resolveValeMention(answer, mention) {
-  // First priority: model used the correct __VALE__ placeholder
-  if (answer.includes(VALE_PLACEHOLDER)) {
-    return answer.replaceAll(VALE_PLACEHOLDER, mention);
-  }
-  // Second priority: model wrote the literal word "Vale" instead of the token —
-  // replace it so the Discord mention is correctly injected without duplication.
-  if (/\bVale\b/i.test(answer)) {
-    return answer.replace(/\bVale\b/gi, mention);
-  }
-  // Fallback: neither placeholder nor literal name — append a random phrase
-  const phrase = FALLBACK_HANDOFF_PHRASES[
-    Math.floor(Math.random() * FALLBACK_HANDOFF_PHRASES.length)
-  ];
-  return `${answer}\n\n${phrase} ${mention}`;
-}
-
 /**
  * Routes a remote bot request using LLM self-evaluation.
  *
@@ -582,6 +555,8 @@ async function routeRemoteRequest(reqId, message, messages, localClient) {
     return finalResponse;
   }
 
+  const cleanedAnswer = stripSignals(answer);
+
   // ── Escalation path: post the draft answer and tag the local bot ──────────
   if (shouldEscalate) {
     // Re-check availability — the local bot may have gone offline while the
@@ -590,12 +565,11 @@ async function routeRemoteRequest(reqId, message, messages, localClient) {
       logger.info(
         `[${reqId}] LLM wanted to escalate but local bot went offline during inference — answering directly`
       );
-      await sendChunked(message, answer);
-      return answer;
+      await sendChunked(message, cleanedAnswer);
+      return cleanedAnswer;
     }
     logger.info(`[${reqId}] LLM self-routing: escalating to local model (score=${score})`);
-    const localMention = `<@${localClient.user.id}>`;
-    const handoffText = resolveValeMention(answer, localMention);
+    const handoffText = `${cleanedAnswer}\n(cc <@${localClient.user.id}>)`;
     await sendChunked(message, handoffText);
     // Push a placeholder assistant entry so history stays properly alternating.
     // Without this, the next message sees two consecutive user turns and
@@ -610,8 +584,8 @@ async function routeRemoteRequest(reqId, message, messages, localClient) {
   if (localAvailable) {
     logger.debug(`[${reqId}] LLM self-routing: no escalation needed (score=${score ?? "N/A"})`);
   }
-  await sendChunked(message, answer);
-  return answer;
+  await sendChunked(message, cleanedAnswer);
+  return cleanedAnswer;
 }
 
 // ── Search flow ───────────────────────────────────────────────────────────────

@@ -142,4 +142,10 @@ describe("buildEscalationInstruction()", () => {
   test("mentions score in the instruction text", () => {
     assert.ok(buildEscalationInstruction().includes("score"));
   });
+
+  test("forbids writing __VALE__ or Vale references in answer text", () => {
+    const instruction = buildEscalationInstruction();
+    assert.ok(instruction.includes("Never write __VALE__ or any Vale reference"));
+    assert.ok(!instruction.includes('Do NOT use "cc __VALE__"'));
+  });
 });
