@@ -52,7 +52,8 @@ const mcpClients = [];
  *  type: "function",
  *  function: { name: string, description: string, parameters: object },
  *  _serverName: string,
- *  _originalName: string
+ *  _originalName: string,
+ *  _docsBaseUrl: string|null
  * }>}
  */
 let cachedTools = [];
@@ -326,6 +327,10 @@ async function connectToServer(serverName, url, transport, headers = {}) {
 
     logger.info(`[mcp] ${serverName} provides ${tools.length} tool(s): ${[...toolNames].join(", ")}`);
 
+    // Look up the server config so we can forward docsBaseUrl to each tool entry.
+    const serverConfig = config.mcp.servers.find((s) => s.name === serverName);
+    const docsBaseUrl = serverConfig?.docsBaseUrl ?? null;
+
     const prefixedTools = tools.map((t) => ({
       type: "function",
       function: {
@@ -335,6 +340,7 @@ async function connectToServer(serverName, url, transport, headers = {}) {
       },
       _serverName: serverName,
       _originalName: t.name,
+      _docsBaseUrl: docsBaseUrl,
     }));
 
     mcpClients.push({ name: serverName, client });
