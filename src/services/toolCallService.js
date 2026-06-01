@@ -7,6 +7,7 @@ const MAX_TOOL_ROUNDS = 5;
 const MAX_TOOL_RESULT_CHARS = 8_000;
 const MAX_EVIDENCE_DEPTH = 6;
 const MAX_SEARCH_RESULT_ITEMS = 2;
+const HOMEPAGE_FALLBACK_VALUES = ["/", "index", "home", ""];
 const DOC_SEARCH_TOOL_RE = /(?:^|__)searchDocumentation$/i;
 const DOC_GET_PAGE_TOOL_RE = /(?:^|__)getPage$/i;
 const SEARCH_RESULT_COLLECTION_KEYS = ["results", "items", "hits", "pages", "documents", "entries"];
@@ -360,7 +361,9 @@ function buildGetPageArgs(toolDefinition, candidate) {
 
   for (const property of keysToTry) {
     const lookupOrder = aliases[property] ?? [property, ...PAGE_CANDIDATE_KEYS];
-    const matchKey = lookupOrder.find((key) => typeof candidate[key] === "string" && candidate[key].trim());
+    const matchKey = lookupOrder.find(
+      (key) => typeof candidate[key] === "string" && (candidate[key].trim() || candidate[key] === "")
+    );
     if (matchKey) {
       return { [property]: candidate[matchKey] };
     }
@@ -424,6 +427,40 @@ async function maybeFetchDocsPage(searchToolName, searchResult, tools, deps, ini
       return { result: pageResult, attempts, canonicalUrl };
     }
     fallbackStep += 1;
+  }
+
+  if (attempts.length === 0) {
+    deps.logger.debug("[tool-call] maybeFetchDocsPage: no valid page candidates — trying homepage fallback");
+    for (const fallbackValue of HOMEPAGE_FALLBACK_VALUES) {
+      const fallbackCandidate = {
+        homepageFallback: true,
+        path: fallbackValue,
+        pagePath: fallbackValue,
+        slug: fallbackValue,
+        id: fallbackValue,
+        pageId: fallbackValue,
+        url: fallbackValue,
+        uri: fallbackValue,
+        href: fallbackValue,
+      };
+      const pageArgs = buildGetPageArgs(getPageTool, fallbackCandidate);
+      if (!pageArgs) continue;
+      deps.logger.debug(
+        `[tool-call] docs-fallback ${JSON.stringify({
+          tool: getPageTool.function.name,
+          fallbackStep,
+          strategy: "getPage-homepage",
+          args: pageArgs,
+        })}`
+      );
+      const pageResult = await deps.callMcpTool(getPageTool.function.name, pageArgs, { fallbackStep });
+      attempts.push(summarizeAttempt(getPageTool.function.name, pageArgs, pageResult, fallbackStep));
+      if (pageResult?.ok && !pageResult?.empty) {
+        deps.logger.debug("[tool-call] getPage homepage fallback succeeded");
+        return { result: pageResult, attempts, canonicalUrl: null };
+      }
+      fallbackStep += 1;
+    }
   }
 
   return { result: null, attempts };

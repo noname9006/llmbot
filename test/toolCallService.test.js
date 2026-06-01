@@ -359,6 +359,74 @@ describe("executeToolCallWithFallback()", () => {
     );
   });
 
+  test("tries homepage getPage fallback when search yields no page candidates", async () => {
+    const logger = createLogger();
+    const calls = [];
+    const result = await executeToolCallWithFallback(
+      "gitbook-2__searchDocumentation",
+      { query: "what is dolomite" },
+      {
+        tools: createDocsTools(),
+        logger,
+        async callMcpTool(toolName, args) {
+          calls.push({ toolName, args });
+          if (toolName === "gitbook-2__searchDocumentation") {
+            return {
+              ok: true,
+              empty: false,
+              data: { hits: [{ title: "Dolomite docs" }, { title: "Overview" }] },
+              error: null,
+              tool: toolName,
+              meta: {},
+              sources: ["https://docs.example.com"],
+            };
+          }
+          if (toolName === "gitbook-2__getPage" && args.path === "/") {
+            return {
+              ok: true,
+              empty: false,
+              data: { title: "Docs Home", content: "Welcome" },
+              error: null,
+              tool: toolName,
+              meta: {},
+              sources: ["https://docs.example.com"],
+            };
+          }
+          throw new Error(`Unexpected tool call: ${toolName} ${JSON.stringify(args)}`);
+        },
+      }
+    );
+
+    assert.deepEqual(
+      calls.map((call) => ({ toolName: call.toolName, args: call.args })),
+      [
+        { toolName: "gitbook-2__searchDocumentation", args: { query: "what is dolomite" } },
+        { toolName: "gitbook-2__getPage", args: { path: "/" } },
+      ]
+    );
+    assert.equal(result.result.tool, "gitbook-2__getPage");
+    assert.ok(
+      logger.entries.some((entry) =>
+        entry.message.includes("[tool-call] maybeFetchDocsPage: 0 unique page candidates from search result")
+      ),
+      "expected zero-candidate log"
+    );
+    assert.ok(
+      logger.entries.some((entry) =>
+        entry.message.includes("[tool-call] maybeFetchDocsPage: no valid page candidates — trying homepage fallback")
+      ),
+      "expected homepage fallback log"
+    );
+    assert.ok(
+      logger.entries.some(
+        (entry) =>
+          entry.message.includes('"strategy":"getPage-homepage"') &&
+          entry.message.includes('"path":"/"')
+      ),
+      "expected homepage docs-fallback log"
+    );
+  });
+
   test("trims fallback GitBook content arrays to top 2 when getPage is unavailable", async () => {
     const result = await executeToolCallWithFallback(
       "gitbook-2__searchDocumentation",
