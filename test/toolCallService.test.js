@@ -58,6 +58,14 @@ function createDocsSearchOnlyTools() {
   return createDocsTools().filter((tool) => tool.function.name !== "gitbook-2__getPage");
 }
 
+/** Force full-page fetch so ranking/getPage tests are not short-circuited by snippet digest. */
+function withDocsGetPageMode(deps = {}) {
+  return {
+    ...deps,
+    docsConfig: { postSearchMode: "getPage", ...(deps.docsConfig ?? {}) },
+  };
+}
+
 describe("executeToolCallWithFallback()", () => {
   test("keeps bare 'what is' docs queries unchanged", async () => {
     const logger = createLogger();
@@ -66,7 +74,7 @@ describe("executeToolCallWithFallback()", () => {
     await executeToolCallWithFallback(
       "gitbook-2__searchDocumentation",
       { query: "what is dolomite" },
-      {
+      withDocsGetPageMode({
         tools,
         logger,
         async callMcpTool(toolName, args) {
@@ -101,7 +109,7 @@ describe("executeToolCallWithFallback()", () => {
           }
           throw new Error(`Unexpected tool call: ${toolName} ${JSON.stringify(args)}`);
         },
-      }
+      })
     );
 
     const searchQueries = calls
@@ -139,7 +147,7 @@ describe("executeToolCallWithFallback()", () => {
     await executeToolCallWithFallback(
       "gitbook-2__searchDocumentation",
       { query: "tell me about dolomite" },
-      {
+      withDocsGetPageMode({
         tools,
         logger,
         async callMcpTool(toolName, args) {
@@ -174,7 +182,7 @@ describe("executeToolCallWithFallback()", () => {
           }
           throw new Error(`Unexpected tool call: ${toolName} ${JSON.stringify(args)}`);
         },
-      }
+      })
     );
 
     const searchQueries = calls
@@ -190,7 +198,7 @@ describe("executeToolCallWithFallback()", () => {
     const result = await executeToolCallWithFallback(
       "gitbook-2__searchDocumentation",
       { query: "stBTC staking and peg mechanism" },
-      {
+      withDocsGetPageMode({
         tools,
         logger,
         async callMcpTool(toolName, args) {
@@ -234,7 +242,7 @@ describe("executeToolCallWithFallback()", () => {
           }
           throw new Error(`Unexpected tool call: ${toolName} ${JSON.stringify(args)}`);
         },
-      }
+      })
     );
 
     assert.equal(calls[0].args.query, "stBTC staking and peg mechanism");
@@ -295,7 +303,7 @@ describe("executeToolCallWithFallback()", () => {
     const result = await executeToolCallWithFallback(
       "gitbook-2__searchDocumentation",
       { query: "what is dolomite" },
-      {
+      withDocsGetPageMode({
         tools: createDocsTools(),
         logger,
         async callMcpTool(toolName) {
@@ -325,7 +333,7 @@ describe("executeToolCallWithFallback()", () => {
           }
           throw new Error(`Unexpected tool call: ${toolName}`);
         },
-      }
+      })
     );
 
     assert.equal(result.result.tool, "gitbook-2__searchDocumentation");
@@ -365,7 +373,7 @@ describe("executeToolCallWithFallback()", () => {
     const result = await executeToolCallWithFallback(
       "gitbook-2__searchDocumentation",
       { query: "what is dolomite" },
-      {
+      withDocsGetPageMode({
         tools: createDocsTools(),
         logger,
         async callMcpTool(toolName, args) {
@@ -394,7 +402,7 @@ describe("executeToolCallWithFallback()", () => {
           }
           throw new Error(`Unexpected tool call: ${toolName} ${JSON.stringify(args)}`);
         },
-      }
+      })
     );
 
     assert.deepEqual(
@@ -433,7 +441,7 @@ describe("executeToolCallWithFallback()", () => {
     const result = await executeToolCallWithFallback(
       "gitbook-2__searchDocumentation",
       { query: "plutusdao plvglp" },
-      {
+      withDocsGetPageMode({
         tools: createDocsTools(),
         logger,
         async callMcpTool(toolName, args) {
@@ -472,7 +480,7 @@ describe("executeToolCallWithFallback()", () => {
           }
           throw new Error(`Unexpected tool call: ${toolName} ${JSON.stringify(args)}`);
         },
-      }
+      })
     );
 
     assert.equal(calls[1].toolName, "gitbook-2__getPage");
@@ -499,7 +507,7 @@ describe("executeToolCallWithFallback()", () => {
     await executeToolCallWithFallback(
       "gitbook-2__searchDocumentation",
       { query: "what is example" },
-      {
+      withDocsGetPageMode({
         tools: createDocsTools(),
         logger,
         async callMcpTool(toolName, args) {
@@ -532,7 +540,7 @@ describe("executeToolCallWithFallback()", () => {
           }
           throw new Error(`Unexpected tool call: ${toolName} ${JSON.stringify(args)}`);
         },
-      }
+      })
     );
 
     assert.equal(calls[1].toolName, "gitbook-2__getPage");
@@ -559,7 +567,7 @@ describe("executeToolCallWithFallback()", () => {
     await executeToolCallWithFallback(
       "gitbook-2__searchDocumentation",
       { query: "what is example" },
-      {
+      withDocsGetPageMode({
         tools: createDocsTools(),
         logger: createLogger(),
         async callMcpTool(toolName, args) {
@@ -589,7 +597,146 @@ describe("executeToolCallWithFallback()", () => {
           }
           throw new Error(`Unexpected tool call: ${toolName}`);
         },
+      })
+    );
+
+    assert.equal(calls[1].toolName, "gitbook-2__getPage");
+  });
+
+  test("auto mode returns snippet digest for broad what-is queries without getPage", async () => {
+    const logger = createLogger();
+    const calls = [];
+    const searchText =
+      "Title: Partner integration\n" +
+      "Link: https://docs.example.com/integrations/partner-vault\n" +
+      "Content: Example protocol integration with partner vaults and lending hooks for users.\n\n" +
+      "Title: Example Protocol\n" +
+      "Link: https://docs.example.com/\n" +
+      "Content: Example combines lending and trading in one capital-efficient platform for DeFi users.\n";
+
+    const result = await executeToolCallWithFallback(
+      "gitbook-2__searchDocumentation",
+      { query: "what is example" },
+      {
+        tools: createDocsTools(),
+        logger,
+        docsConfig: { postSearchMode: "auto", minSnippetChars: 100 },
+        async callMcpTool(toolName) {
+          calls.push({ toolName });
+          if (toolName === "gitbook-2__searchDocumentation") {
+            return {
+              ok: true,
+              empty: false,
+              data: { content: [{ type: "text", text: searchText }] },
+              error: null,
+              tool: toolName,
+              meta: {},
+              sources: ["https://docs.example.com/", "https://docs.example.com/integrations/partner-vault"],
+            };
+          }
+          throw new Error(`Unexpected tool call: ${toolName}`);
+        },
       }
+    );
+
+    assert.deepEqual(calls, [{ toolName: "gitbook-2__searchDocumentation" }]);
+    assert.equal(result.result.data.docsSearchDigest, true);
+    assert.ok(result.result.data.hits.length >= 2);
+    assert.equal(result.grounded, true);
+    assert.ok(
+      logger.entries.some((entry) =>
+        entry.message.includes("docs-post-search") && entry.message.includes('delivery=snippets')
+      ),
+      "expected snippets delivery log"
+    );
+    assert.ok(
+      logger.entries.some((entry) => entry.message.includes("docs-snippet-digest")),
+      "expected digest log"
+    );
+  });
+
+  test("snippets mode never calls getPage when search has parsed hits", async () => {
+    const calls = [];
+    const result = await executeToolCallWithFallback(
+      "gitbook-2__searchDocumentation",
+      { query: "how does lending work" },
+      {
+        tools: createDocsTools(),
+        logger: createLogger(),
+        docsConfig: { postSearchMode: "snippets", maxSnippetHits: 3, minSnippetChars: 50 },
+        async callMcpTool(toolName) {
+          calls.push({ toolName });
+          if (toolName === "gitbook-2__searchDocumentation") {
+            return {
+              ok: true,
+              empty: false,
+              data: {
+                content: [
+                  {
+                    text:
+                      "Title: Lending overview\n" +
+                      "Link: https://docs.example.com/lending\n" +
+                      "Content: Users supply assets to earn yield while borrowers take over-collateralized loans.",
+                  },
+                ],
+              },
+              error: null,
+              tool: toolName,
+              meta: {},
+              sources: ["https://docs.example.com/lending"],
+            };
+          }
+          throw new Error(`Unexpected tool call: ${toolName}`);
+        },
+      }
+    );
+
+    assert.deepEqual(calls, [{ toolName: "gitbook-2__searchDocumentation" }]);
+    assert.equal(result.result.data.docsSearchDigest, true);
+    assert.deepEqual(result.sourceUrls, ["https://docs.example.com/lending"]);
+  });
+
+  test("auto mode uses getPage for specific how-to queries", async () => {
+    const calls = [];
+    const searchText =
+      "Title: Lending overview\n" +
+      "Link: https://docs.example.com/lending\n" +
+      "Content: Users supply assets to earn yield while borrowing against collateral in the protocol.\n";
+
+    await executeToolCallWithFallback(
+      "gitbook-2__searchDocumentation",
+      { query: "how does lending on example work" },
+      withDocsGetPageMode({
+        tools: createDocsTools(),
+        logger: createLogger(),
+        docsConfig: { postSearchMode: "auto" },
+        async callMcpTool(toolName, args) {
+          calls.push({ toolName, args });
+          if (toolName === "gitbook-2__searchDocumentation") {
+            return {
+              ok: true,
+              empty: false,
+              data: { content: [{ type: "text", text: searchText }] },
+              error: null,
+              tool: toolName,
+              meta: {},
+              sources: ["https://docs.example.com/lending"],
+            };
+          }
+          if (toolName === "gitbook-2__getPage") {
+            return {
+              ok: true,
+              empty: false,
+              data: { title: "Lending", content: "Full lending page" },
+              error: null,
+              tool: toolName,
+              meta: {},
+              sources: ["https://docs.example.com/lending"],
+            };
+          }
+          throw new Error(`Unexpected tool call: ${toolName}`);
+        },
+      })
     );
 
     assert.equal(calls[1].toolName, "gitbook-2__getPage");

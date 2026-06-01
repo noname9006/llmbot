@@ -395,6 +395,13 @@ function buildMcpServers() {
   return servers;
 }
 
+function normalizeDocsPostSearchMode(value) {
+  const mode = String(value ?? "auto").trim().toLowerCase();
+  if (mode === "snippets" || mode === "snippet") return "snippets";
+  if (mode === "getpage" || mode === "get_page" || mode === "page") return "getPage";
+  return "auto";
+}
+
 export const config = {
   discord: {
     // Bot #1 — Remote model (always-on VPS)
@@ -554,6 +561,18 @@ export const config = {
   mcp: {
     enabled: optional("MCP_ENABLED", "false") === "true",
     servers: buildMcpServers(),
+  },
+  docs: {
+    // After docs search: "auto" (broad + good snippets → digest, else getPage),
+    // "snippets" (never auto-getPage), "getPage" (always fetch full page when possible).
+    postSearchMode: normalizeDocsPostSearchMode(optional("DOCS_POST_SEARCH_MODE", "auto")),
+    maxSnippetHits: Math.min(
+      10,
+      Math.max(1, parseInt(optional("DOCS_MAX_SNIPPET_HITS", "4"), 10) || 4)
+    ),
+    minSnippetChars: Math.max(0, parseInt(optional("DOCS_MIN_SNIPPET_CHARS", "400"), 10) || 400),
+    minSearchConfidenceScore: Number(optional("DOCS_MIN_SEARCH_CONFIDENCE_SCORE", "8")) || 8,
+    minSearchConfidenceGap: Number(optional("DOCS_MIN_SEARCH_CONFIDENCE_GAP", "2")) || 2,
   },
   logLevel: optional("LOG_LEVEL", "info"),
   logRaw:   optional("LOG_RAW",   "false") === "true",

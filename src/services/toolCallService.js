@@ -52,6 +52,8 @@ const BROAD_OVERVIEW_QUERY_RE = /^\s*(what is|what's|tell me about|explain|overv
 const SPECIFIC_DOCS_QUERY_RE =
   /\b(how (does|do|to)|mechanism|steps|integrat|vault|plvglp|lending on)\b/i;
 const MAX_RANKED_CANDIDATES_LOG = 5;
+const MAX_SNIPPET_EXCERPT_CHARS = 1_200;
+const VALID_DOCS_POST_SEARCH_MODES = new Set(["auto", "snippets", "getPage"]);
 
 /** Patterns that indicate the model is narrating a future tool call instead of making one. */
 const STALLING_PATTERNS = [
@@ -562,6 +564,144 @@ function searchHitToPageCandidate(hit) {
   };
 }
 
+function getDocsPostSearchSettings(deps) {
+  const docs = { ...(config.docs ?? {}), ...(deps.docsConfig ?? {}) };
+  const mode = VALID_DOCS_POST_SEARCH_MODES.has(docs.postSearchMode)
+    ? docs.postSearchMode
+    : "auto";
+  return {
+    mode,
+    maxSnippetHits: Math.min(10, Math.max(1, Number(docs.maxSnippetHits) || 4)),
+    minSnippetChars: Math.max(0, Number(docs.minSnippetChars) || 400),
+    minConfidenceScore: Number(docs.minSearchConfidenceScore) || 8,
+    minConfidenceGap: Number(docs.minSearchConfidenceGap) || 2,
+  };
+}
+
+function totalRankedSnippetChars(rankedHits, maxHits) {
+  return rankedHits
+    .slice(0, maxHits)
+    .reduce((sum, hit) => sum + (hit.title?.length ?? 0) + (hit.snippet?.length ?? 0), 0);
+}
+
+function hitHasSubstantiveSnippet(hit) {
+  const snippet = hit.snippet ?? "";
+  if (snippet.trim().length >= 80) return true;
+  return OVERVIEW_TEXT_SIGNAL_RE.test(hit.title ?? "") || OVERVIEW_TEXT_SIGNAL_RE.test(snippet);
+}
+
+/**
+ * @param {Array<{ score: number, title?: string, snippet?: string, url: string }>} rankedHits
+ * @param {{ minConfidenceScore: number, minConfidenceGap: number }} settings
+ */
+function assessSearchSnippetConfidence(rankedHits, settings) {
+  if (rankedHits.length === 0) {
+    return { level: "low", reason: "no_hits" };
+  }
+  const top = rankedHits[0];
+  const gap = rankedHits.length > 1 ? top.score - rankedHits[1].score : top.score;
+  const substantive = hitHasSubstantiveSnippet(top);
+
+  if (
+    substantive &&
+    top.score >= settings.minConfidenceScore &&
+    gap >= settings.minConfidenceGap
+  ) {
+    return { level: "high", reason: "top_score_and_gap", gap };
+  }
+  if (substantive && top.score >= settings.minConfidenceScore * 0.75) {
+    return { level: "medium", reason: "moderate_top_score", gap };
+  }
+  return { level: "low", reason: "weak_scores", gap };
+}
+
+/**
+ * @param {string} query
+ * @param {Array<{ score: number, title?: string, snippet?: string, url: string }>} rankedHits
+ * @param {ReturnType<typeof getDocsPostSearchSettings>} settings
+ */
+function resolvePostSearchStrategy(query, rankedHits, settings) {
+  if (settings.mode === "snippets") {
+    if (rankedHits.length === 0) {
+      return { useSnippets: false, reason: "snippets_mode_no_parsed_hits" };
+    }
+    if (totalRankedSnippetChars(rankedHits, settings.maxSnippetHits) < settings.minSnippetChars) {
+      return { useSnippets: false, reason: "snippets_mode_insufficient_text" };
+    }
+    return { useSnippets: true, reason: "mode_snippets" };
+  }
+
+  if (settings.mode === "getPage") {
+    return { useSnippets: false, reason: "mode_getPage" };
+  }
+
+  if (rankedHits.length === 0) {
+    return { useSnippets: false, reason: "auto_no_parsed_hits" };
+  }
+  if (!isBroadOverviewQuery(query)) {
+    return { useSnippets: false, reason: "auto_specific_query" };
+  }
+  if (totalRankedSnippetChars(rankedHits, settings.maxSnippetHits) < settings.minSnippetChars) {
+    return { useSnippets: false, reason: "auto_insufficient_snippet_text" };
+  }
+
+  const confidence = assessSearchSnippetConfidence(rankedHits, settings);
+  if (confidence.level === "high") {
+    return { useSnippets: true, reason: "auto_broad_high_confidence" };
+  }
+  if (
+    confidence.level === "medium" &&
+    isHomepageLikePath(getUrlPathname(rankedHits[0].url))
+  ) {
+    return { useSnippets: true, reason: "auto_broad_homepage_hit" };
+  }
+
+  return { useSnippets: false, reason: `auto_${confidence.level}_${confidence.reason}` };
+}
+
+/**
+ * @param {object} searchResult
+ * @param {Array<{ title?: string, url: string, snippet?: string, score: number }>} rankedHits
+ * @param {string} query
+ * @param {number} maxHits
+ * @param {string} searchToolName
+ */
+function buildSearchSnippetDigestResult(searchResult, rankedHits, query, maxHits, searchToolName) {
+  const hits = rankedHits.slice(0, maxHits).map((hit) => ({
+    title: hit.title ?? null,
+    url: hit.url,
+    excerpt: truncateString(hit.snippet ?? "", MAX_SNIPPET_EXCERPT_CHARS),
+    relevanceScore: Number(hit.score.toFixed(2)),
+  }));
+
+  const sourceUrls = hits.map((hit) => hit.url).filter(Boolean);
+
+  return {
+    ...searchResult,
+    ok: true,
+    empty: false,
+    data: {
+      docsSearchDigest: true,
+      query: String(query ?? "").trim(),
+      hits,
+    },
+    tool: searchToolName,
+    sources: sourceUrls.length > 0 ? sourceUrls : (searchResult.sources ?? []),
+  };
+}
+
+function sourceUrlsFromRankedHits(rankedHits, maxUrls = 3) {
+  const urls = [];
+  const seen = new Set();
+  for (const hit of rankedHits) {
+    if (!hit?.url || seen.has(hit.url)) continue;
+    seen.add(hit.url);
+    urls.push(hit.url);
+    if (urls.length >= maxUrls) break;
+  }
+  return urls;
+}
+
 function extractPageCandidates(value, candidates = [], depth = 0) {
   if (depth > MAX_EVIDENCE_DEPTH || value == null) return candidates;
   if (typeof value === "string") {
@@ -733,7 +873,8 @@ async function maybeFetchDocsPage(searchToolName, searchResult, tools, deps, ini
  *   tools?: Array<any>,
  *   getMcpTools?: () => Array<any>,
  *   callMcpTool?: typeof callMcpTool,
- *   logger?: typeof logger
+ *   logger?: typeof logger,
+ *   docsConfig?: { postSearchMode?: string, maxSnippetHits?: number, minSnippetChars?: number, minSearchConfidenceScore?: number, minSearchConfidenceGap?: number }
  * }} [deps]
  * @returns {Promise<{result: any, grounded: boolean, sourceUrls: string[], docsSearchAttempted: boolean}>}
  */
@@ -742,6 +883,7 @@ export async function executeToolCallWithFallback(toolName, args, deps = {}) {
     tools: deps.tools ?? deps.getMcpTools?.() ?? getMcpTools(),
     callMcpTool: deps.callMcpTool ?? callMcpTool,
     logger: deps.logger ?? logger,
+    docsConfig: deps.docsConfig,
   };
   const docsSearchTool = isDocsSearchTool(toolName);
   effectiveDeps.logger.debug(
@@ -786,6 +928,38 @@ export async function executeToolCallWithFallback(toolName, args, deps = {}) {
       attempts.push(summarizeAttempt(searchToolName, searchArgs, searchResult, fallbackStep));
 
       if (searchResult?.ok && !searchResult?.empty) {
+        const docsSettings = getDocsPostSearchSettings(effectiveDeps);
+        const parsedHits = parseSearchHitsFromData(searchResult?.data);
+        const rankedHits = parsedHits.length > 0 ? rankSearchHits(parsedHits, searchArgs.query) : [];
+        const postSearchStrategy = resolvePostSearchStrategy(
+          searchArgs.query,
+          rankedHits,
+          docsSettings
+        );
+        effectiveDeps.logger.debug(
+          `[tool-call] docs-post-search: mode=${docsSettings.mode} delivery=${postSearchStrategy.useSnippets ? "snippets" : "getPage"} reason=${postSearchStrategy.reason} hits=${rankedHits.length}`
+        );
+
+        if (postSearchStrategy.useSnippets) {
+          const digestResult = buildSearchSnippetDigestResult(
+            searchResult,
+            rankedHits,
+            searchArgs.query,
+            docsSettings.maxSnippetHits,
+            searchToolName
+          );
+          const sourceUrls = sourceUrlsFromRankedHits(rankedHits, docsSettings.maxSnippetHits);
+          effectiveDeps.logger.debug(
+            `[tool-call] docs-snippet-digest: ${digestResult.data.hits.length} hit(s), sources=${previewArrayForLog(sourceUrls)}`
+          );
+          return {
+            result: attachAttemptMetadata(digestResult, attempts),
+            grounded: isGroundedToolResult(digestResult),
+            sourceUrls,
+            docsSearchAttempted: true,
+          };
+        }
+
         const pageFetch = await maybeFetchDocsPage(
           searchToolName,
           searchResult,
@@ -814,7 +988,9 @@ export async function executeToolCallWithFallback(toolName, args, deps = {}) {
         effectiveDeps.logger.debug(
           `[tool-call] trimSearchResultData: maxItems=${MAX_SEARCH_RESULT_ITEMS} data shape=${describeTrimDataShape(searchResult?.data)} changed=${trimChanged}`
         );
-        const sourceUrls = extractTopRankedSourceUrls(searchResult);
+        const sourceUrls = rankedHits.length > 0
+          ? sourceUrlsFromRankedHits(rankedHits, 1)
+          : extractTopRankedSourceUrls(searchResult);
         effectiveDeps.logger.debug(
           `[tool-call] extractTopRankedSourceUrls: picked ${sourceUrls.length} url(s): ${previewArrayForLog(sourceUrls)}`
         );
