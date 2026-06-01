@@ -226,6 +226,48 @@ function logConfigDebug(message) {
   console.log(`[config] ${message}`);
 }
 
+/**
+ * Derives the plain docs base URL from a fully-normalized MCP endpoint URL by
+ * stripping the well-known MCP path suffix (/~gitbook/mcp or /mcp).
+ *
+ * Examples:
+ *   "https://docs.dolomite.io/~gitbook/mcp"  → "https://docs.dolomite.io/"
+ *   "https://docs.blend.money/mcp"            → "https://docs.blend.money/"
+ *   "https://docs.example.com/project/~gitbook/mcp" → "https://docs.example.com/project/"
+ *
+ * Returns null when the URL cannot be parsed or does not contain a known suffix.
+ *
+ * @param {string} normalizedMcpUrl  - already-normalized MCP endpoint URL
+ * @param {"gitbook"|"mintlify"} type
+ * @returns {string|null}
+ */
+function extractDocsBaseUrl(normalizedMcpUrl, type) {
+  const trimmed = String(normalizedMcpUrl ?? "").trim();
+  if (!trimmed) return null;
+
+  try {
+    const parsed = new URL(trimmed);
+    let path = parsed.pathname;
+
+    if (type === "gitbook") {
+      path = path.replace(/\/~gitbook\/mcp$/i, "");
+    } else if (type === "mintlify") {
+      path = path.replace(/\/mcp$/i, "");
+    } else {
+      return null;
+    }
+
+    // Ensure the base URL ends with a trailing slash so it is a valid root.
+    parsed.pathname = path.endsWith("/") ? path : `${path}/`;
+    // Strip query and hash — the base URL is a clean root.
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
 function normalizeGitBookMcpUrl(rawUrl, sourceEnvKey) {
   const trimmed = String(rawUrl ?? "").trim();
   if (!trimmed) return "";
@@ -283,7 +325,7 @@ function normalizeMintlifyMcpUrl(rawUrl, sourceEnvKey) {
 }
 
 function buildMcpServers() {
-  /** @type {Array<{name: string, url: string, transport: "streamable-http"|"sse", label?: string, headers?: Record<string, string>}>} */
+  /** @type {Array<{name: string, url: string, transport: "streamable-http"|"sse", label?: string, docsBaseUrl?: string, headers?: Record<string, string>}>} */
   const servers = [];
   const seenNames = new Set();
 
@@ -313,11 +355,14 @@ function buildMcpServers() {
 
       const token = optional(`MCP_GITBOOK_TOKEN_${i}`, "").trim() || sharedGitbookToken;
       const label = optional(`MCP_GITBOOK_LABEL_${i}`, "").trim();
+      const normalizedUrl = normalizeGitBookMcpUrl(gitbookUrlRaw, envKey);
+      const docsBaseUrl = extractDocsBaseUrl(normalizedUrl, "gitbook");
       pushUniqueMcpServer(servers, seenNames, {
         name: `gitbook-${i}`,
-        url: normalizeGitBookMcpUrl(gitbookUrlRaw, envKey),
+        url: normalizedUrl,
         transport: gitbookTransport,
         label,
+        ...(docsBaseUrl ? { docsBaseUrl } : {}),
         ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
       });
     }
@@ -328,11 +373,14 @@ function buildMcpServers() {
         throw new Error("MCP_GITBOOK_ENABLED=true requires MCP_GITBOOK_URL_1..10 or legacy MCP_GITBOOK_URL to be set.");
       }
       const token = optional("MCP_GITBOOK_TOKEN", "").trim();
+      const normalizedUrl = normalizeGitBookMcpUrl(gitbookUrlLegacy, "MCP_GITBOOK_URL");
+      const docsBaseUrl = extractDocsBaseUrl(normalizedUrl, "gitbook");
       pushUniqueMcpServer(servers, seenNames, {
         name: "gitbook-1",
-        url: normalizeGitBookMcpUrl(gitbookUrlLegacy, "MCP_GITBOOK_URL"),
+        url: normalizedUrl,
         transport: gitbookTransport,
         label: optional("MCP_GITBOOK_LABEL_1", "").trim(),
+        ...(docsBaseUrl ? { docsBaseUrl } : {}),
         ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
       });
     }
@@ -351,11 +399,14 @@ function buildMcpServers() {
 
       const token = optional(`MCP_MINTLIFY_TOKEN_${i}`, "").trim() || sharedMintlifyToken;
       const label = optional(`MCP_MINTLIFY_LABEL_${i}`, "").trim();
+      const normalizedUrl = normalizeMintlifyMcpUrl(mintlifyUrlRaw, envKey);
+      const docsBaseUrl = extractDocsBaseUrl(normalizedUrl, "mintlify");
       pushUniqueMcpServer(servers, seenNames, {
         name: `mintlify-${i}`,
-        url: normalizeMintlifyMcpUrl(mintlifyUrlRaw, envKey),
+        url: normalizedUrl,
         transport: mintlifyTransport,
         label,
+        ...(docsBaseUrl ? { docsBaseUrl } : {}),
         ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
       });
     }
@@ -366,11 +417,14 @@ function buildMcpServers() {
         throw new Error("MCP_MINTLIFY_ENABLED=true requires MCP_MINTLIFY_URL_1..10 or legacy MCP_MINTLIFY_URL to be set.");
       }
       const token = optional("MCP_MINTLIFY_TOKEN", "").trim();
+      const normalizedUrl = normalizeMintlifyMcpUrl(mintlifyUrlLegacy, "MCP_MINTLIFY_URL");
+      const docsBaseUrl = extractDocsBaseUrl(normalizedUrl, "mintlify");
       pushUniqueMcpServer(servers, seenNames, {
         name: "mintlify-1",
-        url: normalizeMintlifyMcpUrl(mintlifyUrlLegacy, "MCP_MINTLIFY_URL"),
+        url: normalizedUrl,
         transport: mintlifyTransport,
         label: optional("MCP_MINTLIFY_LABEL_1", "").trim(),
+        ...(docsBaseUrl ? { docsBaseUrl } : {}),
         ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
       });
     }
