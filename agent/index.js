@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import { spawn } from "child_process";
 import path from "path";
+import { warmupModel } from "./warmupModel.js";
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
@@ -378,6 +379,7 @@ app.post("/start", async (req, res) => {
     }
 
     await startServer(modelFile, role, extraArgs, contextSize);
+    await warmupModel(LLAMA_SERVER_PORT, { logger });
     res.json({ status: "ok", model: modelFile, port: LLAMA_SERVER_PORT });
 
     // Notify all queued callers that the start completed successfully

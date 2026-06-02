@@ -4,8 +4,9 @@ import { logger } from "../logger.js";
 // Which local model is currently loaded: null | 'local'
 let activeLocalModel = null;
 
-// Tracks whether the local model has completed warmup and is ready for inference.
-// Set to false when the agent reconnects; set to true after warmupLocalModel() succeeds.
+// Tracks whether the local model has completed startup/warmup and is ready for inference.
+// Set to false when the agent reconnects; set to true after a successful agent /start
+// (which now includes agent-side warmup) or an explicit manual warmupLocalModel() call.
 let isLocalModelReady = false;
 
 // Idle timer reference for the local model
@@ -97,7 +98,7 @@ export function getLocalModelReady() {
 
 /**
  * Sets the local model warmup-ready state.
- * Called by warmupLocalModel() on success or failure.
+ * Called by warmupLocalModel() or agent /start lifecycle events.
  * @param {boolean} ready
  */
 export function setLocalModelReady(ready) {
@@ -146,17 +147,24 @@ export async function ensureLocalModel() {
 
     const gen = generation; // capture before going async
     logger.debug("ensureLocalModel: starting /start for local model");
+    if (generation === gen) isLocalModelReady = false;
     const p = agentStart(config.llama.localModelFile, {
       role: "local",
       extraArgs: config.llama.extraArgsLocal,
       contextSize: config.llama.contextSizeLocal,
     })
       .then(() => {
-        if (generation === gen) activeLocalModel = "local";
+        if (generation === gen) {
+          activeLocalModel = "local";
+          isLocalModelReady = true;
+        }
         else logger.debug("ensureLocalModel: skipping stale state update (generation changed)");
       })
       .catch((err) => {
-        if (generation === gen) activeLocalModel = null;
+        if (generation === gen) {
+          activeLocalModel = null;
+          isLocalModelReady = false;
+        }
         else logger.debug("ensureLocalModel: skipping stale error reset (generation changed)");
         throw err;
       })
@@ -292,4 +300,3 @@ async function agentStop() {
     logger.warn(`Failed to stop local llama-server: ${err.message}`);
   }
 }
-
