@@ -2,6 +2,7 @@ import { spawn, execFileSync } from "child_process";
 import fs from "fs";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
+import { setLocalModelReady } from "./agentService.js";
 
 /** @type {import("child_process").ChildProcess | null} */
 let vpsProcess = null;
@@ -263,8 +264,11 @@ export async function warmupLocalModel() {
     return;
   }
 
+  // Mark local model as not ready until warmup succeeds
+  setLocalModelReady(false);
+
   try {
-    const WARMUP_TIMEOUT_MS = 30_000;
+    const WARMUP_TIMEOUT_MS = 300_000;
 
     logger.info("[localLlama] Warming up local model (sending minimal inference request)…");
 
@@ -283,7 +287,8 @@ export async function warmupLocalModel() {
     });
 
     if (res.ok) {
-      logger.info("[localLlama] Local model warm-up complete");
+      setLocalModelReady(true);
+      logger.info("[localLlama] Model ready for inference");
     } else {
       const text = await res.text().catch(() => "(unreadable)");
       logger.warn(`[localLlama] Local warm-up request returned non-OK status ${res.status}: ${text}`);

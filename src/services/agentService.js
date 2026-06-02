@@ -4,6 +4,10 @@ import { logger } from "../logger.js";
 // Which local model is currently loaded: null | 'local'
 let activeLocalModel = null;
 
+// Tracks whether the local model has completed warmup and is ready for inference.
+// Set to false when the agent reconnects; set to true after warmupLocalModel() succeeds.
+let isLocalModelReady = false;
+
 // Idle timer reference for the local model
 let localIdleTimer = null;
 
@@ -84,6 +88,23 @@ export function getActiveLocalModel() {
 }
 
 /**
+ * Returns whether the local model has completed warmup and is ready for inference.
+ * @returns {boolean}
+ */
+export function getLocalModelReady() {
+  return isLocalModelReady;
+}
+
+/**
+ * Sets the local model warmup-ready state.
+ * Called by warmupLocalModel() on success or failure.
+ * @param {boolean} ready
+ */
+export function setLocalModelReady(ready) {
+  isLocalModelReady = ready;
+}
+
+/**
  * Called by localAvailabilityService when the agent transitions offline→online.
  * Resets the cached model state so the next request triggers a fresh /start.
  */
@@ -94,6 +115,8 @@ export function resetActiveModelOnReconnect() {
     );
     activeLocalModel = null;
   }
+  // Mark the local model as not ready until warmup completes after reconnect.
+  isLocalModelReady = false;
   // Increment generation so any in-flight pendingSwitch callbacks from the
   // previous connection become no-ops and cannot re-set activeLocalModel.
   generation++;

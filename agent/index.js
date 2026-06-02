@@ -67,6 +67,23 @@ let startInProgress = false;
 /** @type {Array<{ resolve: () => void, reject: (e: Error) => void }>} */
 const startQueue = [];
 
+// ── Structured log patterns from llama-server output ─────────────────────────
+// Lines matching these patterns are re-logged with the [localLlama] prefix so
+// they appear in the same format as the remote model logs.  All others use the
+// generic [llama-server] prefix.  Only emitted at debug level.
+const LOCAL_LLAMA_PATTERNS = [
+  /srv\s+params_from_/,
+  /slot\s+get_availabl/,
+  /slot\s+print_timing/,
+  /llm_load_tensors/,
+  /llm_load_print_meta/,
+  /warming up the model/i,
+  /model loaded/i,
+  /kv cache/i,
+  /build info/i,
+  /system info/i,
+];
+
 /**
  * Spawns llama-server with the given model file.
  * Waits until the server reports it is ready (listens on the port).
@@ -129,7 +146,16 @@ function startServer(modelFile, role = "", extraArgs = "", contextSize = 0) {
     // a fallback and will still detect readiness.
     function onData(data) {
       const text = data.toString();
-      logger.debug(`[llama-server] ${text.trim()}`);
+      const lines = text.split("\n");
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        // Route structured log lines to [localLlama] prefix for easy identification
+        const prefix = LOCAL_LLAMA_PATTERNS.some((p) => p.test(trimmed))
+          ? "[localLlama]"
+          : "[llama-server]";
+        logger.debug(`${prefix} ${trimmed}`);
+      }
       if (text.includes("HTTP server listening") || text.includes("server is listening")) {
         markReady();
       }
