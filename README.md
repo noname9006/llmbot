@@ -483,6 +483,8 @@ See [`gemma4.md`](./gemma4.md) for a full Gemma 4 setup and hardware guide.
 
 Key points for running Gemma 4 with this bot:
 
+- **`--swa-full` is required.** Gemma 4 uses "hybrid SWA" which triggers a llama.cpp checkpoint invalidation bug (June 2025) that causes 10–44 minute cold starts on every slot switch. The bot automatically adds `--swa-full --parallel 4` to `LLAMA_EXTRA_ARGS_REMOTE` and `--swa-full` to `LLAMA_EXTRA_ARGS_LOCAL` by default. If you override those variables, make sure you keep `--swa-full`. Learn more: [`gemma4.md`](./gemma4.md).
+
 - **Enable thinking mode** by passing `--chat-template-kwargs '{"enable_thinking":true}'` to llama-server. Set this via role-specific vars like `LLAMA_EXTRA_ARGS_REMOTE` and `LLAMA_EXTRA_ARGS_LOCAL`.
 
   When using the **Windows local agent**, the preferred place is the **agent's** `.env` (agent-side values take priority over bot-sent values):

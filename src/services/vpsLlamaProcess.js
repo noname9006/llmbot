@@ -3,6 +3,7 @@ import fs from "fs";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 import { setLocalModelReady } from "./agentService.js";
+import { prewarmNKeep } from "./llamaService.js";
 
 /** @type {import("child_process").ChildProcess | null} */
 let vpsProcess = null;
@@ -233,6 +234,9 @@ export async function warmupRemoteModel() {
 
     if (res.ok) {
       logger.info("[remoteLlama] Model warm-up complete");
+      // Pre-warm n_keep cache for the remote model
+      prewarmNKeep(url, { role: "system", content: config.llm.systemPromptRemote }, [])
+        .catch(() => {});
     } else {
       const text = await res.text().catch(() => "(unreadable)");
       logger.warn(`[remoteLlama] Warm-up request returned non-OK status ${res.status}: ${text}`);
@@ -289,6 +293,9 @@ export async function warmupLocalModel() {
     if (res.ok) {
       setLocalModelReady(true);
       logger.info("[localLlama] Model ready for inference");
+      // Pre-warm n_keep cache for the local model
+      prewarmNKeep(url, { role: "system", content: config.llm.systemPromptLocal }, [])
+        .catch(() => {});
     } else {
       const text = await res.text().catch(() => "(unreadable)");
       logger.warn(`[localLlama] Local warm-up request returned non-OK status ${res.status}: ${text}`);
