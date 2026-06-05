@@ -22,6 +22,7 @@ A Discord bot powered by **llama-server** (llama.cpp) with a two-bot / two-role 
 - [Commands](#commands)
 - [Environment Variables](#environment-variables)
 - [Gemma 4 Notes](#gemma-4-notes)
+- [OpenRouter](#openrouter)
 - [Search Flow](#search-flow)
 - [MCP (Model Context Protocol)](#mcp-model-context-protocol)
 - [Agent Setup](#agent-setup)
@@ -45,6 +46,10 @@ Routing logic is role-based: the remote bot is always available, while the local
             └── HTTP over Tailscale → [Windows agent :3000]
                                           └── manages [local llama-server :8081]
 ```
+
+### Inference backend per role (llama-server or OpenRouter)
+
+Each role's **inference backend** is independent of the bot routing above. By default both roles run against the self-hosted llama-server, but either role can additionally use **[OpenRouter](https://openrouter.ai)** (an OpenAI-compatible provider). Per role you choose a **priority** (which backend to try first), and if that backend's request fails (missing key, network error, 5xx) the request **automatically falls back** to the other backend. The self-hosted llama-server keeps running, so fallback always has a target. See [OpenRouter (per-role inference backend)](#openrouter-per-role-inference-backend) for configuration. This only swaps *where inference runs* — the answer/escalation routing between the two bots is unchanged.
 
 ---
 
@@ -427,6 +432,32 @@ Copy `.env.example` to `.env` and edit it. Variables marked **required** have no
 | `LOCAL_LLAMA_URL` | *(empty)* | Direct URL of local llama-server on the Windows machine |
 | `LOCAL_HEALTH_POLL_INTERVAL_MS` | `30000` | How often (ms) to poll local agent `/health` |
 
+### OpenRouter (per-role inference backend)
+
+Optional. Lets either role run inference on [OpenRouter](https://openrouter.ai) instead of the self-hosted llama-server, with automatic fallback. A role uses OpenRouter only when its `*_ENABLED` flag is `true` **and** `OPENROUTER_API_KEY` is set. `*_PRIORITY` chooses which backend is tried first; the other is the fallback. Leave the enable flags off (default) to keep the bot llama-server-only.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENROUTER_API_KEY` | *(empty)* | OpenRouter API key. Required for any OpenRouter use; when empty, OpenRouter is never selected. |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | OpenAI-compatible base URL |
+| `OPENROUTER_HTTP_REFERER` | *(empty)* | Optional `HTTP-Referer` ranking header (sent only when set) |
+| `OPENROUTER_X_TITLE` | *(empty)* | Optional `X-Title` ranking header (sent only when set) |
+| `OPENROUTER_REMOTE_ENABLED` | `false` | Allow OpenRouter for the remote role |
+| `OPENROUTER_REMOTE_PRIORITY` | `llama` | Remote role preferred backend: `llama` or `openrouter` |
+| `OPENROUTER_REMOTE_MODEL` | `google/gemma-4-26b-a4b-it:free` | OpenRouter model slug for the remote role |
+| `OPENROUTER_REMOTE_CONTEXT_SIZE` | `8192` | Context size used for tool-round trim budgeting (remote) |
+| `OPENROUTER_REMOTE_FETCH_TIMEOUT_MS` | falls back to `LLM_FETCH_TIMEOUT_MS` | Fetch timeout for remote OpenRouter calls |
+| `OPENROUTER_LOCAL_ENABLED` | `false` | Allow OpenRouter for the local role |
+| `OPENROUTER_LOCAL_PRIORITY` | `llama` | Local role preferred backend: `llama` or `openrouter` |
+| `OPENROUTER_LOCAL_MODEL` | `google/gemma-4-31b-it:free` | OpenRouter model slug for the local role |
+| `OPENROUTER_LOCAL_CONTEXT_SIZE` | `8192` | Context size used for tool-round trim budgeting (local) |
+| `OPENROUTER_LOCAL_FETCH_TIMEOUT_MS` | falls back to `LLM_FETCH_TIMEOUT_MS` | Fetch timeout for local OpenRouter calls |
+| `OPENROUTER_{TEMPERATURE,TOP_P,TOP_K,MAX_TOKENS}_{REMOTE,LOCAL}` | falls back to global `LLM_*` | Per-role OpenRouter inference params. Only this OpenAI-safe subset is sent (no `min_p`/`repeat_penalty`/reasoning budget). |
+| `OPENROUTER_RETRY_MAX_ATTEMPTS` | falls back to `RETRY_MAX_ATTEMPTS` | Max retry attempts for OR calls |
+| `OPENROUTER_RETRY_INITIAL_DELAY_MS` | falls back to `RETRY_INITIAL_DELAY_MS` | Initial backoff delay for non-429 OR failures |
+| `OPENROUTER_RETRY_RATE_LIMIT_DELAY_MS` | `10000` | Fixed pause (ms) for 429 rate-limit responses; `Retry-After` header takes precedence when present |
+| `OPENROUTER_FALLBACK` | `0` | Cross-role OR fallback: `0`=off, `1`=local→remote only, `2`=any direction |
+
 ### Model file / role prompt
 
 | Variable | Default | Description |
@@ -564,6 +595,67 @@ Key points for running Gemma 4 with this bot:
   LLM_REPEAT_PENALTY=1.0
   ```
 - **VPS model** can be a different, smaller/faster model (e.g. a compact quantised model) — it does not need to be Gemma 4.
+
+---
+
+## OpenRouter
+
+Use OpenRouter when you want a hosted model to serve a role instead of (or as a fallback for) your self-hosted llama-server. It is OpenAI-compatible, so it slots into the same inference path — only the backend selection changes; all bot routing, search, MCP, and history behave identically.
+
+Minimal example — prefer OpenRouter for the remote role, fall back to llama-server on failure:
+
+```env
+OPENROUTER_API_KEY=sk-or-...
+OPENROUTER_REMOTE_ENABLED=true
+OPENROUTER_REMOTE_PRIORITY=openrouter
+OPENROUTER_REMOTE_MODEL=google/gemma-4-26b-a4b-it:free
+
+# Optional: do the same for the local (escalation) role
+OPENROUTER_LOCAL_ENABLED=true
+OPENROUTER_LOCAL_PRIORITY=openrouter
+OPENROUTER_LOCAL_MODEL=google/gemma-4-31b-it:free
+```
+
+How selection works per role:
+
+- A role is OpenRouter-eligible only when its `*_ENABLED` flag is `true` **and** `OPENROUTER_API_KEY` is set.
+- `*_PRIORITY` decides which backend is tried first (`llama` or `openrouter`).
+- If the preferred backend's request fails (missing key, network error, 5xx), the request **automatically falls back** to the other backend. With `PRIORITY=llama` (default), OpenRouter acts purely as a backup; with `PRIORITY=openrouter`, the llama-server is the backup.
+- The self-hosted llama-server still starts and warms up as usual, so a fallback target is always available. Set per-role `*_CONTEXT_SIZE` so tool-round context trimming matches the OpenRouter model's window.
+
+> Only the OpenAI-safe inference params (`temperature`, `top_p`, `top_k`, `max_tokens`) are sent to OpenRouter. llama.cpp-specific options (`min_p`, `repeat_penalty`, `n_keep`, reasoning budget) apply to the llama-server backend only.
+
+### OpenRouter retry
+
+OpenRouter calls are retried independently from the global retry settings:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENROUTER_RETRY_MAX_ATTEMPTS` | falls back to `RETRY_MAX_ATTEMPTS` | Max attempts per OR call |
+| `OPENROUTER_RETRY_INITIAL_DELAY_MS` | falls back to `RETRY_INITIAL_DELAY_MS` | Initial backoff for non-429 failures |
+| `OPENROUTER_RETRY_RATE_LIMIT_DELAY_MS` | `10000` | Fixed pause for 429 rate-limit responses (ms). The `Retry-After` header from OpenRouter is honoured when present and takes precedence. |
+
+429 responses are retried up to `OPENROUTER_RETRY_MAX_ATTEMPTS` times; all other 4xx errors are not retried.
+
+### OpenRouter cross-role fallback
+
+`OPENROUTER_FALLBACK` controls whether a failing OR model can try the other role's OR model before falling back to llama-server:
+
+| Value | Behaviour |
+|-------|-----------|
+| `0` (default) | Disabled — each role only falls back to its own llama-server |
+| `1` | Local → remote only: local OR (31B, powerful) fails → try remote OR (26B, lighter) → then llama |
+| `2` | Any direction: remote OR fails → try local OR, and vice versa → then llama |
+
+When a cross-role OR fallback is used, the system prompt automatically switches to the fallback role's persona so the model behaves consistently.
+
+### Local bot presence with OpenRouter
+
+The local bot (vale) tracks OpenRouter availability by polling `GET /models` on the same interval as the agent health check (`LOCAL_HEALTH_POLL_INTERVAL_MS`). Presence shows:
+- **Idle** — Tailscale agent is online+warmed **or** OpenRouter local is reachable
+- **DND** — both the agent and OpenRouter local are unavailable
+
+Escalation from the remote bot to vale is gated on this combined check — the remote bot will not tag vale when neither backend is available.
 
 ---
 

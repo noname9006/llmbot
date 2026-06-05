@@ -21,6 +21,15 @@ logger.info(`Local model:  ${config.llama.localUrl  || "(not configured)"}`);
 logger.info(`  Local model file: ${config.llama.localModelFile || "(not configured)"}`);
 logger.info(`Local bot:    ${config.discord.tokenLocal ? "configured" : "disabled (DISCORD_TOKEN_LOCAL not set)"}`);
 
+// OpenRouter alternative backend (per role). Active only when the role flag is
+// set AND an API key is configured.
+const _orKey = Boolean(config.openrouter.apiKey);
+const _orSummary = (role) => {
+  const r = config.openrouter[role];
+  return r.enabled && _orKey ? `on (${r.priority}-first, ${r.model})` : "off";
+};
+logger.info(`OpenRouter:   remote=${_orSummary("remote")} | local=${_orSummary("local")}`);
+
 // ── Effective runtime config summary ─────────────────────────────────────────
 const searchStatus = config.search.enabled === "off"
   ? "disabled"

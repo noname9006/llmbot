@@ -7,7 +7,7 @@ import http from "http";
 import { config } from "./config.js";
 import { logger } from "./logger.js";
 import { onRemoteMessage, onLocalMessage, onLocalDirectMessage, getSemaphoreStats } from "./handlers/messageHandler.js";
-import { startPolling, isLocalAvailable, isVpsAvailable } from "./services/localAvailabilityService.js";
+import { startPolling, isLocalAvailable, isVpsAvailable, isOrLocalAvailable } from "./services/localAvailabilityService.js";
 import { getActiveLocalModel } from "./services/agentService.js";
 import { setLocalClient, setLocalPresenceIdle, setLocalPresenceDnd } from "./services/localPresenceService.js";
 
@@ -174,6 +174,12 @@ function startHealthServer(discordClient) {
       localAgent: isLocalAvailable() ? "online" : "offline",
       activeModel: getActiveLocalModel(),
       remoteServer: isVpsAvailable() ? "online" : "offline",
+      openrouter: {
+        remote: config.openrouter.remote.enabled && config.openrouter.apiKey ? "enabled" : "disabled",
+        local: config.openrouter.local.enabled && config.openrouter.apiKey
+          ? (isOrLocalAvailable() ? "online" : "offline")
+          : "disabled",
+      },
       llmRequests: { running, queued },
     };
     res.writeHead(200, { "Content-Type": "application/json" });

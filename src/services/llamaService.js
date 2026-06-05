@@ -91,23 +91,42 @@ export async function prewarmNKeep(baseUrl, systemMessage, tools = []) {
  * @returns {Promise<{ content: string|null, tool_calls: Array|null }>}
  */
 export async function llamaChatCompletion(baseUrl, messages, opts = {}, tools = []) {
-  // Extract fetchTimeout before spreading opts into the API request body.
-  // fetchTimeout is a bot-level control; it must not be sent to llama-server.
-  const { fetchTimeout: optsFetchTimeout, ...bodyOpts } = opts;
+  // Extract bot-level / provider control fields before spreading the rest into
+  // the API request body. These must never be sent as inference params
+  // (and apiKey must never end up in the body).
+  const {
+    fetchTimeout: optsFetchTimeout,
+    provider = "llama",
+    apiKey,
+    model,
+    contextSize: _contextSize, // bot-side trim budgeting only; not an API field
+    ...bodyOpts
+  } = opts;
 
-  // Resolve n_keep from the first system message so the server never shifts
-  // the system prompt out of the KV cache.
+  const isOpenRouter = provider === "openrouter";
+
+  // Resolve n_keep from the first system message so the (llama) server never
+  // shifts the system prompt out of the KV cache. OpenRouter has no such
+  // concept and metering an extra call would be wasteful, so we skip it.
   let nKeep = null;
-  if (messages[0]?.role === "system") {
+  if (!isOpenRouter && messages[0]?.role === "system") {
     nKeep = await resolveNKeep(baseUrl, messages[0], tools);
   }
 
   const body = {
     messages,
     stream: false,
+    ...(model ? { model } : {}),
     ...(nKeep ? { n_keep: nKeep } : {}),
     ...bodyOpts,
     ...(tools.length > 0 ? { tools: toolsForApiPayload(tools), tool_choice: "auto" } : {}),
+  };
+
+  const headers = {
+    "Content-Type": "application/json",
+    ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+    ...(isOpenRouter && config.openrouter.referer ? { "HTTP-Referer": config.openrouter.referer } : {}),
+    ...(isOpenRouter && config.openrouter.title ? { "X-Title": config.openrouter.title } : {}),
   };
 
   // Per-call timeout takes priority; falls back to global config.
@@ -127,6 +146,23 @@ export async function llamaChatCompletion(baseUrl, messages, opts = {}, tools = 
   const done = logger.timer(`llamaChat (${baseUrl})`, "debug");
 
   try {
+    // OpenRouter uses its own configurable retry counts and allows retrying 429
+    // (rate-limit).  The llama path keeps the existing conservative settings.
+    const retryOpts = isOpenRouter
+      ? {
+          maxAttempts:      config.openrouter.retry.maxAttempts,
+          initialDelayMs:   config.openrouter.retry.initialDelayMs,
+          rateLimitDelayMs: config.openrouter.retry.rateLimitDelayMs,
+          // Retry network errors, 5xx, and 429 (rate-limit); abort on other 4xx
+          shouldRetry: (err) => !err.statusCode || err.statusCode >= 500 || err.statusCode === 429,
+        }
+      : {
+          maxAttempts:    config.retry.maxAttempts,
+          initialDelayMs: config.retry.initialDelayMs,
+          // Retry network errors and 5xx only; never retry 4xx for llama
+          shouldRetry: (err) => !err.statusCode || err.statusCode >= 500,
+        };
+
     return await withRetry(
       async () => {
         const signal =
@@ -136,7 +172,7 @@ export async function llamaChatCompletion(baseUrl, messages, opts = {}, tools = 
 
         const res = await fetch(`${baseUrl}/chat/completions`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers,
           body: JSON.stringify(body),
           signal,
         });
@@ -146,8 +182,19 @@ export async function llamaChatCompletion(baseUrl, messages, opts = {}, tools = 
           const err = new Error(
             `llama-server /chat/completions failed: ${res.status} ${res.statusText} — ${text}`
           );
-          // Don't retry client errors (4xx)
           err.statusCode = res.status;
+          // For OpenRouter 429: honour the Retry-After header (seconds or
+          // HTTP-date format) so we wait exactly as long as the server asks.
+          if (isOpenRouter && res.status === 429) {
+            const retryAfterRaw = res.headers.get("retry-after");
+            if (retryAfterRaw) {
+              const seconds = parseFloat(retryAfterRaw);
+              if (!isNaN(seconds) && seconds > 0) {
+                // Cap at 60 s to avoid very long stalls; jitter is skipped for 429.
+                err.retryAfterMs = Math.min(seconds * 1000, 60_000);
+              }
+            }
+          }
           throw err;
         }
 
@@ -170,11 +217,8 @@ export async function llamaChatCompletion(baseUrl, messages, opts = {}, tools = 
         return { content, tool_calls: toolCalls };
       },
       {
-        maxAttempts: config.retry.maxAttempts,
-        initialDelayMs: config.retry.initialDelayMs,
+        ...retryOpts,
         label: `llamaChat(${baseUrl})`,
-        // Retry on network errors and 5xx; abort on 4xx
-        shouldRetry: (err) => !err.statusCode || err.statusCode >= 500,
       }
     );
   } finally {

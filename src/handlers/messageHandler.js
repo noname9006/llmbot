@@ -6,6 +6,7 @@ import { llamaChat } from "../services/llamaService.js";
 import { llamaWithTools } from "../services/toolCallService.js";
 import { isLocalAvailable } from "../services/localAvailabilityService.js";
 import { ensureLocalModel } from "../services/agentService.js";
+import { runWithFallback, isOpenrouterCandidate } from "../services/backendRouter.js";
 import { safeGetMcpContextBlock } from "../services/mcpService.js";
 import { search } from "../services/searchService.js";
 import { isCommand, handleCommand } from "./commandHandler.js";
@@ -16,32 +17,10 @@ import {
   setLocalPresenceCooldown,
 } from "../services/localPresenceService.js";
 
-// ── Per-model LLM options ─────────────────────────────────────────────────────
-
-/**
- * Returns LLM opts (API inference params + per-call fetch timeout) for
- * the given model role. Callers spread this into llamaChat / llamaWithTools opts
- * so the correct params are sent for every role.
- *
- * @param {'remote'|'local'} role
- * @returns {object}
- */
-function modelOpts(role) {
-  const capRole = role[0].toUpperCase() + role.slice(1); // "Remote" | "Local"
-  const params  = config.llama[`params${capRole}`];
-  const contextSizeKey = role === "remote" ? "contextSlotSizeRemote" : "contextSlotSizeLocal";
-  return {
-    temperature:    params.temperature,
-    top_p:          params.topP,
-    top_k:          params.topK,
-    min_p:          params.minP,
-    repeat_penalty: params.repeatPenalty,
-    max_tokens:     params.maxTokens > 0 ? params.maxTokens : -1,
-    ...(params.reasoningBudget >= 0 ? { budget_tokens: params.reasoningBudget } : {}),
-    fetchTimeout:   config.llama[`fetchTimeout${capRole}`],
-    contextSize:    config.llama[contextSizeKey],
-  };
-}
+// Per-role inference backend selection (llama-server and/or OpenRouter, with
+// automatic fallback) lives in services/backendRouter.js. Handlers run their
+// model calls through runWithFallback(role, (endpoint) => …), which supplies
+// the endpoint's baseUrl and provider-shaped opts.
 
 // Leave headroom for edits — Discord's hard limit is 2000 chars
 const STREAM_CHUNK_LIMIT = 1900;
@@ -173,7 +152,9 @@ export async function onRemoteMessage(message, remoteClient, localClient) {
       ];
       await message.channel.sendTyping();
       const rawGreet = stripThinkBlock(
-        await llamaChat(config.llama.remoteUrl, greetMessages, modelOpts("remote"))
+        await runWithFallback("remote", (ep, reqRole) =>
+          llamaChat(ep.baseUrl, buildMessagesForEndpoint(greetMessages, reqRole, ep.nativeRole), ep.opts)
+        )
       );
       await sendChunked(message, rawGreet.trim() || MSG_GREETING_FALLBACK);
     } catch (err) {
@@ -317,8 +298,10 @@ export async function onLocalMessage(message, localClient, remoteClient) {
 
   let typingInterval;
   try {
-    // Ensure the local model is loaded
-    await ensureLocalModel();
+    // Ensure the local model is loaded. When OpenRouter can serve the local
+    // role, a llama load failure must not abort the request — runWithFallback
+    // will route to OpenRouter instead.
+    await ensureLocalModelForRequest(reqId);
 
     // ── Build message history keyed by the HUMAN's user ID ────────────────────
     // Note: we do NOT push a new user message here — the original human message
@@ -340,7 +323,9 @@ export async function onLocalMessage(message, localClient, remoteClient) {
       8_000
     );
     const rawResponse = stripThinkBlock(
-      await llamaWithTools(config.llama.localUrl, messages, modelOpts("local"))
+      await runWithFallback("local", (ep, reqRole) =>
+        llamaWithTools(ep.baseUrl, buildMessagesForEndpoint(messages, reqRole, ep.nativeRole), ep.opts)
+      )
     );
     logger.raw("← local output", rawResponse);
 
@@ -350,13 +335,13 @@ export async function onLocalMessage(message, localClient, remoteClient) {
     if (searchMatch) {
       if (config.search.enabled === "off") {
         logger.warn(`[${reqId}] [local] __SEARCH__ signal dropped — SEARCH=off`);
-        finalResponse = await retryWithoutSearch(reqId, message, messages, config.llama.localUrl, modelOpts("local"));
+        finalResponse = await retryWithoutSearch(reqId, message, messages, "local");
       } else if (config.search.mode === "command") {
         logger.warn(`[${reqId}] [local] __SEARCH__ auto-signal dropped — SEARCH_MODE=command`);
-        finalResponse = await retryWithoutSearch(reqId, message, messages, config.llama.localUrl, modelOpts("local"));
+        finalResponse = await retryWithoutSearch(reqId, message, messages, "local");
       } else {
         logger.debug(`[${reqId}] [local] __SEARCH__ detected — mode=auto, searching`);
-        finalResponse = await handleSearchSignal(reqId, message, messages, rawResponse, config.llama.localUrl, modelOpts("local"));
+        finalResponse = await handleSearchSignal(reqId, message, messages, rawResponse, "local");
       }
     } else {
       finalResponse = rawResponse;
@@ -425,7 +410,7 @@ export async function onLocalDirectMessage(message, localClient) {
 
   let typingInterval;
   try {
-    await ensureLocalModel();
+    await ensureLocalModelForRequest(reqId);
 
     historyService.pushUser(historyUserId, userText);
     const messages = historyService.getMessages(
@@ -446,7 +431,9 @@ export async function onLocalDirectMessage(message, localClient) {
       8_000
     );
     const rawResponse = stripThinkBlock(
-      await llamaWithTools(config.llama.localUrl, messages, modelOpts("local"))
+      await runWithFallback("local", (ep, reqRole) =>
+        llamaWithTools(ep.baseUrl, buildMessagesForEndpoint(messages, reqRole, ep.nativeRole), ep.opts)
+      )
     );
     logger.raw("← local direct output", rawResponse);
 
@@ -455,12 +442,12 @@ export async function onLocalDirectMessage(message, localClient) {
     if (searchMatch) {
       if (config.search.enabled === "off") {
         logger.warn(`[${reqId}] [local-direct] __SEARCH__ signal dropped — SEARCH=off`);
-        finalResponse = await retryWithoutSearch(reqId, message, messages, config.llama.localUrl, modelOpts("local"));
+        finalResponse = await retryWithoutSearch(reqId, message, messages, "local");
       } else if (config.search.mode === "command") {
         logger.warn(`[${reqId}] [local-direct] __SEARCH__ auto-signal dropped — SEARCH_MODE=command`);
-        finalResponse = await retryWithoutSearch(reqId, message, messages, config.llama.localUrl, modelOpts("local"));
+        finalResponse = await retryWithoutSearch(reqId, message, messages, "local");
       } else {
-        finalResponse = await handleSearchSignal(reqId, message, messages, rawResponse, config.llama.localUrl, modelOpts("local"));
+        finalResponse = await handleSearchSignal(reqId, message, messages, rawResponse, "local");
       }
     } else {
       finalResponse = rawResponse;
@@ -521,7 +508,9 @@ async function routeRemoteRequest(reqId, message, messages, localClient) {
 
   logger.raw("→ remote input", messagesForModel);
   const rawResponse = stripThinkBlock(
-    await llamaWithTools(config.llama.remoteUrl, messagesForModel, modelOpts("remote"))
+    await runWithFallback("remote", (ep, reqRole) =>
+      llamaWithTools(ep.baseUrl, buildMessagesForEndpoint(messagesForModel, reqRole, ep.nativeRole), ep.opts)
+    )
   );
   logger.raw("← remote output", rawResponse);
 
@@ -542,15 +531,15 @@ async function routeRemoteRequest(reqId, message, messages, localClient) {
   if (searchMatch) {
     if (config.search.enabled === "off") {
       logger.warn(`[${reqId}] __SEARCH__ signal dropped — SEARCH=off`);
-      return await retryWithoutSearch(reqId, message, messages, config.llama.remoteUrl, modelOpts("remote"));
+      return await retryWithoutSearch(reqId, message, messages, "remote");
     }
     if (config.search.mode === "command") {
       logger.warn(`[${reqId}] __SEARCH__ auto-signal dropped — SEARCH_MODE=command`);
-      return await retryWithoutSearch(reqId, message, messages, config.llama.remoteUrl, modelOpts("remote"));
+      return await retryWithoutSearch(reqId, message, messages, "remote");
     }
     logger.debug(`[${reqId}] __SEARCH__ detected — mode=auto, searching`);
     const finalResponse = await handleSearchSignal(
-      reqId, message, messages, answer, config.llama.remoteUrl, modelOpts("remote")
+      reqId, message, messages, answer, "remote"
     );
     await sendChunked(message, finalResponse);
     return finalResponse;
@@ -600,11 +589,10 @@ async function routeRemoteRequest(reqId, message, messages, localClient) {
  * @param {import("discord.js").Message} message
  * @param {Array<{role: string, content: string}>} messages  - full history up to this point
  * @param {string} modelResponse  - the raw model response containing the search signal
- * @param {string} baseUrl
- * @param {object} [opts]  - llamaWithTools opts (inference params + fetchTimeout) for this role
+ * @param {'remote'|'local'} role  - which model role to run the follow-up against
  * @returns {Promise<string>}  the final answer after search
  */
-async function handleSearchSignal(reqId, message, messages, modelResponse, baseUrl, opts = {}) {
+async function handleSearchSignal(reqId, message, messages, modelResponse, role) {
   const match = SEARCH_SIGNAL_RE.exec(modelResponse.trim());
   if (!match) return modelResponse;
 
@@ -614,11 +602,8 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
     logger.warn(`[${reqId}] Search signal with empty query — skipping search`);
     return MSG_SEARCH_EMPTY_QUERY;
   }
-  logger.debug(`[${reqId}] handleSearchSignal: query="${query}" url=${baseUrl}`);
-  logger.info(`[${reqId}] Search signal detected: "${query}" (url: ${baseUrl})`);
-
-  // Determine role label for raw logging
-  const role = baseUrl === config.llama.remoteUrl ? "remote" : "local";
+  logger.debug(`[${reqId}] handleSearchSignal: query="${query}" role=${role}`);
+  logger.info(`[${reqId}] Search signal detected: "${query}" (role: ${role})`);
 
   // Post a deterministic ack — an LLM-generated ack is unreliable here because
   // the model frequently echoes __SEARCH__: back when it sees the signal in context.
@@ -649,7 +634,11 @@ async function handleSearchSignal(reqId, message, messages, modelResponse, baseU
   ];
 
   logger.raw(`→ ${role} search-result input`, messagesWithResults);
-  const finalResponse = stripThinkBlock(await llamaWithTools(baseUrl, messagesWithResults, opts));
+  const finalResponse = stripThinkBlock(
+    await runWithFallback(role, (ep, reqRole) =>
+      llamaWithTools(ep.baseUrl, buildMessagesForEndpoint(messagesWithResults, reqRole, ep.nativeRole), ep.opts)
+    )
+  );
   logger.raw(`← ${role} search-result output`, finalResponse);
 
   // Guard against the model returning another search signal — prevents the
@@ -701,10 +690,7 @@ export async function handleForcedSearch(message, query) {
 
   await semaphore.acquire();
   try {
-    // Use remote model (always available for forced search)
-    const baseUrl = config.llama.remoteUrl;
-    const llmOpts = modelOpts("remote");
-
+    // Use remote role (always available for forced search)
     // Get the current history for this user (no new user message pushed)
     const messages = historyService.getMessages(
       message.author.id,
@@ -741,7 +727,11 @@ export async function handleForcedSearch(message, query) {
     ];
 
     logger.raw("→ forced-search result input", messagesWithResults);
-    const finalResponse = stripThinkBlock(await llamaWithTools(baseUrl, messagesWithResults, llmOpts));
+    const finalResponse = stripThinkBlock(
+      await runWithFallback("remote", (ep, reqRole) =>
+        llamaWithTools(ep.baseUrl, buildMessagesForEndpoint(messagesWithResults, reqRole, ep.nativeRole), ep.opts)
+      )
+    );
     logger.raw("← forced-search result output", finalResponse);
     await sendChunked(message, finalResponse);
 
@@ -762,10 +752,53 @@ export async function handleForcedSearch(message, query) {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
+ * Loads the local llama model before a local-role request.
+ *
+ * When OpenRouter is configured for the local role, a llama load failure is
+ * downgraded to a warning so the request can still be served by OpenRouter via
+ * runWithFallback. When OpenRouter is not configured, this behaves exactly as a
+ * bare ensureLocalModel() call (throws on failure).
+ *
+ * @param {string} reqId
+ */
+async function ensureLocalModelForRequest(reqId) {
+  try {
+    await ensureLocalModel();
+  } catch (err) {
+    if (!isOpenrouterCandidate("local")) throw err;
+    logger.warn(
+      `[${reqId}] [local] ensureLocalModel failed but OpenRouter is available for the local role — continuing: ${err.message}`
+    );
+  }
+}
+
+/**
+ * Rebuilds the messages array with the system prompt for the given endpoint.
+ *
+ * When a cross-role OpenRouter fallback is used (e.g. local role falls back to
+ * the remote OR model), the endpoint's `nativeRole` differs from the requested
+ * role.  In that case the first (system) message is replaced with the fallback
+ * role's system prompt so the model receives its own persona.
+ *
+ * @param {Array<{role: string, content: string}>} messages - original messages
+ * @param {string} requestedRole - role originally requested ("remote"|"local")
+ * @param {string} endpointNativeRole - role this endpoint's config belongs to
+ * @returns {Array<{role: string, content: string}>}
+ */
+function buildMessagesForEndpoint(messages, requestedRole, endpointNativeRole) {
+  if (!endpointNativeRole || endpointNativeRole === requestedRole) return messages;
+  // Cross-role OR fallback: replace system message with the fallback role's prompt.
+  const promptKey = endpointNativeRole === "remote" ? "systemPromptRemote" : "systemPromptLocal";
+  const newSystem = resolveDynamicPrompt(config.llm[promptKey], safeGetMcpContextBlock());
+  return [{ role: "system", content: newSystem }, ...messages.slice(1)];
+}
+
+/**
  * Re-runs the model asking it to answer directly, without searching.
  * Used when search is disabled (SEARCH=off) or suppressed (SEARCH_MODE=command).
+ * @param {'remote'|'local'} role  - which model role to run against
  */
-async function retryWithoutSearch(reqId, message, messages, baseUrl, opts = {}) {
+async function retryWithoutSearch(reqId, message, messages, role) {
   logger.debug(`[${reqId}] retryWithoutSearch — re-running without search context`);
   const retryMessages = [
     ...messages,
@@ -775,7 +808,11 @@ async function retryWithoutSearch(reqId, message, messages, baseUrl, opts = {}) 
     },
   ];
   logger.raw("→ retry-without-search input", retryMessages);
-  const retryResponse = stripThinkBlock(await llamaWithTools(baseUrl, retryMessages, opts));
+  const retryResponse = stripThinkBlock(
+    await runWithFallback(role, (ep, reqRole) =>
+      llamaWithTools(ep.baseUrl, buildMessagesForEndpoint(retryMessages, reqRole, ep.nativeRole), ep.opts)
+    )
+  );
   logger.raw("← retry-without-search output", retryResponse);
   await sendChunked(message, retryResponse);
   return retryResponse;

@@ -1,6 +1,7 @@
 import { historyService } from "../services/historyService.js";
 import {
   isLocalAvailable,
+  isOrLocalAvailable,
   isVpsAvailable,
   agentOfflineDurationMs,
   agentOnlineDurationMs,
@@ -93,23 +94,35 @@ export async function handleCommand(message, _client, handlers = {}) {
         return "⛔ This command is only available to server administrators.";
       }
 
-      const localOnline = isLocalAvailable();
+      const localOnline = isLocalAvailable();   // true if agent OR OR-local is up
+      // agentOnlineDurationMs() returns non-zero iff the agent is currently online
+      const agentOnline = agentOnlineDurationMs() > 0;
+      const orLocalOnline = isOrLocalAvailable();
       const remoteOnline = isVpsAvailable();
       const activeModel = getActiveLocalModel();
       const historyCount = historyService.size;
       const { running, queued } = getSemaphoreStats();
 
-      const localLine = localOnline
-        ? `🟢 Local agent **online** (active model: **${activeModel ?? "none"}**)`
-        : `🔴 Local agent **offline** — remote model is the only responder`;
+      // Build a human-readable local status line that correctly reflects which
+      // backend(s) are actually available, rather than just "agent online/offline".
+      let localLine;
+      if (!localOnline) {
+        localLine = `🔴 Local role **unavailable** — remote model is the only responder`;
+      } else if (agentOnline && orLocalOnline) {
+        localLine = `🟢 Local role **online** — agent (model: **${activeModel ?? "none"}**) + OpenRouter`;
+      } else if (agentOnline) {
+        localLine = `🟢 Local role **online** via agent (model: **${activeModel ?? "none"}**)`;
+      } else {
+        localLine = `🟡 Local role **online** via OpenRouter (agent offline)`;
+      }
 
-      const durationMs = localOnline
-        ? agentOnlineDurationMs()
-        : agentOfflineDurationMs();
-      const durationLine =
-        durationMs > 0
-          ? `   ⏱ ${localOnline ? "Online" : "Offline"} for **${formatDuration(durationMs)}**`
-          : "";
+      // Duration line is only meaningful when the agent is the active backend.
+      const agentDurationMs = agentOnline ? agentOnlineDurationMs() : agentOfflineDurationMs();
+      const durationLine = agentOnline && agentDurationMs > 0
+        ? `   ⏱ Agent online for **${formatDuration(agentDurationMs)}**`
+        : (!agentOnline && agentDurationMs > 0
+          ? `   ⏱ Agent offline for **${formatDuration(agentDurationMs)}**`
+          : "");
 
       const remoteLine = remoteOnline
         ? "🟢 Remote llama-server **online**"

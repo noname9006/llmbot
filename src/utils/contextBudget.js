@@ -74,8 +74,12 @@ export function computeMessageTokenBudget({
   minMessageBudget,
 }) {
   if (!nCtx || nCtx <= 0) return 0;
+  // If max_tokens exceeds the context window the model can never actually output
+  // that many tokens, so reserving it would collapse the message budget to the
+  // floor.  Treat any max_tokens >= nCtx as "unconstrained" (reserve 0).
+  const effectiveOut = maxTokensOut > 0 && maxTokensOut < nCtx ? maxTokensOut : 0;
   const reserved =
-    Math.max(0, maxTokensOut) +
+    effectiveOut +
     estimateToolsTokens(tools) +
     Math.max(0, safetyMargin);
   const budget = nCtx - reserved;

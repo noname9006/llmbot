@@ -12,6 +12,7 @@ import {
 let isAgentOnline = false;
 let agentPollTimer = null;
 let vpsPollTimer = null;
+let orLocalPollTimer = null;
 /** Timestamp (ms) when the agent last went offline, or null if currently online */
 let agentOfflineSince = null;
 /** Timestamp (ms) when the agent last came online, or null if currently offline */
@@ -68,14 +69,72 @@ async function pollAgent() {
       agentOfflineSince = Date.now();
       agentOnlineSince = null;
       logger.info("Local agent: online → offline");
-      // Update local bot presence to DND (model unavailable)
-      setLocalPresenceDnd();
+      // Only go DND if OR local is also unavailable
+      if (!isOrLocalOnline) setLocalPresenceDnd();
+    }
+  }
+}
+
+// ── OpenRouter local-role health ──────────────────────────────────────────────
+// Tracks whether the OpenRouter API is reachable and the key is valid.
+// Mirrors the agent polling logic: online→Idle, offline→DND (when agent is
+// also offline so we don't over-suppress presence).
+
+let isOrLocalOnline = false;
+
+/**
+ * Returns true when the local role's OpenRouter backend is configured AND
+ * currently responding to health checks.
+ */
+export function isOrLocalAvailable() {
+  return isOrLocalOnline;
+}
+
+/**
+ * Convenience check: is OpenRouter configured for the local role?
+ * (enabled flag + non-empty API key).
+ * @returns {boolean}
+ */
+function isOrLocalCandidate() {
+  return Boolean(config.openrouter?.local?.enabled && config.openrouter?.apiKey);
+}
+
+/**
+ * Performs a single health check against OpenRouter for the local role.
+ * Uses GET /models with the API key — lightweight, no token spend.
+ */
+async function pollOrLocal() {
+  if (!isOrLocalCandidate()) {
+    isOrLocalOnline = false;
+    return;
+  }
+
+  const wasOnline = isOrLocalOnline;
+  try {
+    const res = await fetch(`${config.openrouter.baseUrl}/models`, {
+      headers: { Authorization: `Bearer ${config.openrouter.apiKey}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    isOrLocalOnline = res.ok;
+  } catch {
+    isOrLocalOnline = false;
+  }
+
+  if (wasOnline !== isOrLocalOnline) {
+    if (isOrLocalOnline) {
+      logger.info("OpenRouter local backend: offline → online");
+      // Show as available if the agent is also offline (otherwise agent already set Idle)
+      if (!isAgentOnline || !getLocalModelReady()) setLocalPresenceIdle();
+    } else {
+      logger.info("OpenRouter local backend: online → offline");
+      // Only go DND when the agent is also unavailable
+      if (!isAgentOnline || !getLocalModelReady()) setLocalPresenceDnd();
     }
   }
 }
 
 /**
- * Starts the agent and VPS polling loops.
+ * Starts the agent, VPS, and OpenRouter-local polling loops.
  * Safe to call multiple times — subsequent calls are no-ops.
  */
 export function startPolling() {
@@ -84,6 +143,7 @@ export function startPolling() {
   // Immediate first poll
   pollAgent().catch((err) => logger.warn("Agent availability poll error:", err.message));
   pollVps().catch((err) => logger.warn("VPS availability poll error:", err.message));
+  pollOrLocal().catch((err) => logger.warn("OR-local availability poll error:", err.message));
 
   agentPollTimer = setInterval(() => {
     pollAgent().catch((err) => logger.warn("Agent availability poll error:", err.message));
@@ -92,15 +152,21 @@ export function startPolling() {
   vpsPollTimer = setInterval(() => {
     pollVps().catch((err) => logger.warn("VPS availability poll error:", err.message));
   }, config.availability.pollIntervalMs);
+
+  orLocalPollTimer = setInterval(() => {
+    pollOrLocal().catch((err) => logger.warn("OR-local availability poll error:", err.message));
+  }, config.availability.pollIntervalMs);
 }
 
 /**
- * Returns the cached availability state of the local agent.
- * Returns true only when the agent is online AND the model has completed warmup.
+ * Returns the cached availability state of the local role.
+ * True when either:
+ *   - The Tailscale agent is online AND the local model has completed warmup, OR
+ *   - The OpenRouter local backend is configured and currently reachable.
  * @returns {boolean}
  */
 export function isLocalAvailable() {
-  return isAgentOnline && getLocalModelReady();
+  return (isAgentOnline && getLocalModelReady()) || isOrLocalOnline;
 }
 
 /**

@@ -183,6 +183,49 @@ function inferenceParams(suffix) {
   };
 }
 
+// ── OpenRouter per-role config ────────────────────────────────────────────────
+// OpenRouter is an OpenAI-compatible inference provider used as an alternative
+// backend per role.  Inference params fall back to the same llama globals so a
+// role without OpenRouter-specific overrides still behaves sensibly.
+
+/**
+ * Builds OpenRouter inference params for a role, falling back to the global
+ * llama defaults.  Only the OpenAI/OpenRouter-safe subset is collected here
+ * (temperature, top_p, top_k, max_tokens); llama.cpp-only fields such as
+ * min_p, repeat_penalty, n_keep and budget_tokens are intentionally excluded.
+ * @param {'REMOTE'|'LOCAL'} suffix
+ */
+function openrouterParams(suffix) {
+  return {
+    temperature: parseFloat(optional(`OPENROUTER_TEMPERATURE_${suffix}`, String(_llamaGlobals.temperature))),
+    topP:        parseFloat(optional(`OPENROUTER_TOP_P_${suffix}`,       String(_llamaGlobals.topP))),
+    topK:        parseInt(  optional(`OPENROUTER_TOP_K_${suffix}`,       String(_llamaGlobals.topK)), 10),
+    maxTokens:   parseInt(  optional(`OPENROUTER_MAX_TOKENS_${suffix}`,  String(_llamaGlobals.maxTokens)), 10),
+  };
+}
+
+/**
+ * Builds the per-role OpenRouter config (enabled flag, priority, model slug,
+ * context size, fetch timeout, inference params).
+ * @param {'REMOTE'|'LOCAL'} suffix
+ * @param {string} defaultModel
+ */
+function openrouterRole(suffix, defaultModel) {
+  const priorityRaw = optional(`OPENROUTER_${suffix}_PRIORITY`, "llama").trim().toLowerCase();
+  return {
+    enabled:  optional(`OPENROUTER_${suffix}_ENABLED`, "false") === "true",
+    // Which backend a role tries first; the other is the automatic fallback.
+    priority: priorityRaw === "openrouter" ? "openrouter" : "llama",
+    model:    optional(`OPENROUTER_${suffix}_MODEL`, defaultModel),
+    contextSize: parseInt(optional(`OPENROUTER_${suffix}_CONTEXT_SIZE`, "8192"), 10) || 0,
+    fetchTimeoutMs: parseInt(
+      optional(`OPENROUTER_${suffix}_FETCH_TIMEOUT_MS`, String(_timeoutFallback)),
+      10
+    ),
+    params: openrouterParams(suffix),
+  };
+}
+
 // ── Discord token resolution ──────────────────────────────────────────────────
 // DISCORD_TOKEN_REMOTE is the canonical name for the remote bot token.
 // Falls back to DISCORD_TOKEN for backward compatibility (logs a deprecation
@@ -498,6 +541,45 @@ export const config = {
     // Each field falls back to the global value if the role-specific var is unset.
     paramsRemote: inferenceParams("REMOTE"),
     paramsLocal:  inferenceParams("LOCAL"),
+  },
+  openrouter: {
+    // Shared OpenRouter settings. A role uses OpenRouter only when its
+    // `enabled` flag is true AND `apiKey` is non-empty.
+    apiKey:  optional("OPENROUTER_API_KEY", ""),
+    baseUrl: optional("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+    // Optional ranking headers (sent only when set) — see OpenRouter docs.
+    referer: optional("OPENROUTER_HTTP_REFERER", ""),
+    title:   optional("OPENROUTER_X_TITLE", ""),
+    remote: openrouterRole("REMOTE", "google/gemma-4-26b-a4b-it:free"),
+    local:  openrouterRole("LOCAL",  "google/gemma-4-31b-it:free"),
+
+    // ── Retry settings specific to OpenRouter calls ───────────────────────────
+    retry: {
+      // How many times to attempt an OpenRouter call before giving up.
+      // Falls back to the global RETRY_MAX_ATTEMPTS when not set.
+      maxAttempts: parseInt(
+        optional("OPENROUTER_RETRY_MAX_ATTEMPTS", optional("RETRY_MAX_ATTEMPTS", "3")),
+        10
+      ),
+      // Initial exponential-backoff delay for non-429 failures (ms).
+      initialDelayMs: parseInt(
+        optional("OPENROUTER_RETRY_INITIAL_DELAY_MS", optional("RETRY_INITIAL_DELAY_MS", "500")),
+        10
+      ),
+      // Fixed delay used for 429 rate-limit retries when the server does NOT
+      // supply a Retry-After header.  Deliberately higher than the generic
+      // backoff to respect rate-limit windows.
+      rateLimitDelayMs: parseInt(optional("OPENROUTER_RETRY_RATE_LIMIT_DELAY_MS", "10000"), 10),
+    },
+
+    // ── Cross-role OR fallback mode ───────────────────────────────────────────
+    // 0 = disabled — each role only falls back to its own llama-server.
+    // 1 = local→remote only — if local OR fails, try the (lighter) remote OR
+    //     model before falling back to llama.  Remote OR cannot fall back to
+    //     local OR.
+    // 2 = any direction — remote OR can fall back to local OR and vice versa.
+    //     If both OR models fail, falls back to the role's llama-server.
+    fallback: parseInt(optional("OPENROUTER_FALLBACK", "0"), 10),
   },
   llm: {
     systemPrompt:        buildSystemPrompt(loadSystemPrompt()),    // kept for backward compat
