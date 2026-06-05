@@ -1,6 +1,7 @@
 import { config } from "../config.js";
 import { logger } from "../logger.js";
-import { resetActiveModelOnReconnect, getLocalModelReady } from "./agentService.js";
+import { resetActiveModelOnReconnect, getLocalModelReady, ensureLocalModel } from "./agentService.js";
+import { warmupLocalModel } from "./vpsLlamaProcess.js";
 import {
   setLocalPresenceIdle,
   setLocalPresenceDnd,
@@ -55,8 +56,14 @@ async function pollAgent() {
       logger.info("Local agent: offline → online");
       // Reset cached model state so the next request triggers a fresh /start
       resetActiveModelOnReconnect();
-      // Update local bot presence to Idle while the next request loads the model
-      setLocalPresenceIdle();
+      // Proactively start the model and run the system-prompt warmup so
+      // isLocalAvailable() becomes true without waiting for the first handoff.
+      // Presence flips to Idle only after warmup succeeds so it accurately
+      // reflects that the model is ready to handle requests.
+      ensureLocalModel()
+        .then(() => warmupLocalModel())
+        .then(() => { if (getLocalModelReady()) setLocalPresenceIdle(); })
+        .catch((err) => logger.warn(`Local model proactive warmup failed: ${err.message}`));
     } else {
       agentOfflineSince = Date.now();
       agentOnlineSince = null;

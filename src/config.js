@@ -468,6 +468,19 @@ export const config = {
       10
     ) || 0,
 
+    // Per-slot context size used for trim budgeting.
+    // When llama-server runs with --parallel N, the total context is split
+    // across N slots.  Set these to (LLAMA_CONTEXT_SIZE_x / N) so the
+    // context trimmer knows the real per-request limit.
+    // Defaults to the total context size when not set (safe but may allow
+    // prompts that exceed the actual slot capacity when parallel > 1).
+    contextSlotSizeRemote: parseInt(optional("LLAMA_CONTEXT_SLOT_SIZE_REMOTE",
+      optional("LLAMA_CONTEXT_SIZE_REMOTE", optional("LLAMA_CONTEXT_SIZE_VPS", _ctxFallback))
+    ), 10) || 0,
+    contextSlotSizeLocal: parseInt(optional("LLAMA_CONTEXT_SLOT_SIZE_LOCAL",
+      optional("LLAMA_CONTEXT_SIZE_LOCAL", optional("LLAMA_CONTEXT_SIZE_COMMON", _ctxFallback))
+    ), 10) || 0,
+
     // ── Per-model fetch timeouts ───────────────────────────────────────────────
     // Falls back to LLM_FETCH_TIMEOUT_MS if the role-specific var is not set.
     fetchTimeoutRemote: parseInt(optional("LLM_FETCH_TIMEOUT_MS_REMOTE",

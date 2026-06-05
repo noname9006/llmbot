@@ -60,7 +60,9 @@ async function resolveNKeep(baseUrl, systemMessage, tools) {
     logger.warn(`[nkeep] Measurement error for ${baseUrl}: ${err.message}`);
   }
 
-  nKeepCache.set(cacheKey, promptTokens);
+  if (promptTokens > 0) {
+    nKeepCache.set(cacheKey, promptTokens);
+  }
   return promptTokens;
 }
 

@@ -76,8 +76,8 @@ function looksLikeStalling(content) {
 function resolveContextSize(baseUrl, opts = {}) {
   const fromOpts = Number(opts.contextSize);
   if (fromOpts > 0) return fromOpts;
-  if (baseUrl === config.llama.remoteUrl) return config.llama.contextSizeRemote;
-  if (baseUrl === config.llama.localUrl) return config.llama.contextSizeLocal;
+  if (baseUrl === config.llama.remoteUrl) return config.llama.contextSlotSizeRemote;
+  if (baseUrl === config.llama.localUrl) return config.llama.contextSlotSizeLocal;
   return 0;
 }
 

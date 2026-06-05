@@ -18,8 +18,6 @@
 **Examples (do these exactly):**
 - "what's btc price" → call coingecko execute
 - "what is stbtc" → call gitbook-2 searchDocumentation with query "stbtc"
-- "what is dolomite" → call gitbook-3 searchDocumentation with query "dolomite"
-- "how does Blend work" → call mintlify-1 search_blend with query "blend"
 - "what's the latest crypto news" → __SEARCH__: latest crypto news
 - "gm" → "Yo 👋" (no tool needed)
 

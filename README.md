@@ -7,6 +7,7 @@ A Discord bot powered by **llama-server** (llama.cpp) with a two-bot / two-role 
 ## Table of Contents
 
 - [Architecture](#architecture)
+- [Request & Routing Flow](#request--routing-flow)
 - [Prerequisites](#prerequisites)
 - [Setup](#setup)
   - [1. Clone and install](#1-clone-and-install)
@@ -44,6 +45,53 @@ Routing logic is role-based: the remote bot is always available, while the local
             └── HTTP over Tailscale → [Windows agent :3000]
                                           └── manages [local llama-server :8081]
 ```
+
+---
+
+## Request & Routing Flow
+
+### Remote model behavior
+
+Every user message tagged at the remote bot goes through this sequence:
+
+1. **Rate-limit & command check** — commands (`!reset`, `!search`, etc.) are handled first and bypass the LLM entirely. Rate-limited users get a wait message.
+2. **Semaphore** — a global slot (`MAX_CONCURRENT_REQUESTS`, default `1`) serializes LLM calls across all users. Queued requests wait here before any model work starts.
+3. **History** — the user's conversation history is loaded and the new user message is appended, all inside the semaphore to avoid races.
+4. **Typing indicator** — `sendTyping()` fires now, immediately before the LLM call. It does **not** fire during the semaphore wait or history loading — users only see "typing" while the model is actually generating.
+5. **Remote model runs** — the remote model produces an answer. When the local bot is available, a complexity-routing instruction is appended to the system message asking the model to include a JSON block (`{"score": 0–10, "should_escalate": true/false}`) after its answer.
+6. **Routing decision:**
+   - `should_escalate: false` (or local unavailable) → the remote answer is sent directly. Done.
+   - `should_escalate: true` → the remote answer is posted as a "starter" and the local bot is tagged with `@LocalBot`. The remote model's turn is recorded in history as `"(escalated to vale)"` so the alternating user/assistant structure stays intact.
+7. **Search signal** — either model may emit `__SEARCH__: <query>` instead of (or as part of) its answer. The search flow runs and the model re-runs with results injected. See [Search Flow](#search-flow).
+
+### Local model behavior (escalation path)
+
+When the remote bot tags the local bot:
+
+1. The local bot resolves the **original human user's ID** from the Discord message reference, so history is loaded under that ID (not the remote bot's ID).
+2. **Model warm-up** (`ensureLocalModel`) — if the local llama-server isn't loaded yet, the agent loads it now. This can take a minute for large models.
+3. **Typing indicator** fires, then the local model runs.
+4. The local bot replies **directly to the original human message** (not to the relay), so the thread stays clean.
+5. The local model's reply is stored in history under the human user's ID, shared with the remote model — both bots read from the same per-user history.
+
+### Local direct replies
+
+Users can **reply directly to any local bot message** to continue the conversation without re-mentioning the remote bot. This goes through the `onLocalDirectMessage` handler, which skips the routing step and runs the local model immediately.
+
+### History sharing
+
+Both bots store and retrieve conversation history **keyed by the human user's Discord ID**. The remote model pushes the user's message; the local model (when escalated) reads the same history without pushing a duplicate user turn. This means the full back-and-forth is visible to either model on the next exchange.
+
+### Signal tokens
+
+The models use internal signal tokens that are stripped before any text reaches Discord:
+
+| Token | Purpose |
+|-------|---------|
+| `__SEARCH__: <query>` | Triggers a SearXNG web search |
+| `{"score":…,"should_escalate":…}` | Complexity routing decision (remote model only) |
+| `__VALE__` | Internal marker token, stripped on output |
+| Leaked tool-call syntax | Stripped as a last-resort safety net |
 
 ---
 

@@ -29,7 +29,7 @@ import {
 function modelOpts(role) {
   const capRole = role[0].toUpperCase() + role.slice(1); // "Remote" | "Local"
   const params  = config.llama[`params${capRole}`];
-  const contextSizeKey = role === "remote" ? "contextSizeRemote" : "contextSizeLocal";
+  const contextSizeKey = role === "remote" ? "contextSlotSizeRemote" : "contextSlotSizeLocal";
   return {
     temperature:    params.temperature,
     top_p:          params.topP,
@@ -171,6 +171,7 @@ export async function onRemoteMessage(message, remoteClient, localClient) {
             "Reply naturally — short and in character. No need to ask what they want.",
         },
       ];
+      await message.channel.sendTyping();
       const rawGreet = stripThinkBlock(
         await llamaChat(config.llama.remoteUrl, greetMessages, modelOpts("remote"))
       );
@@ -198,16 +199,10 @@ export async function onRemoteMessage(message, remoteClient, localClient) {
     `[${reqId}] [${message.author.tag}] in #${message.channel.name ?? message.channelId}: ${userText.slice(0, 80)}`
   );
 
-  // ── Typing indicator ────────────────────────────────────────────────────────
-  await message.channel.sendTyping();
-  const typingInterval = setInterval(
-    () => message.channel.sendTyping().catch(() => {}),
-    8_000
-  );
-
   // ── Acquire global concurrency slot ────────────────────────────────────────
   await semaphore.acquire();
 
+  let typingInterval;
   try {
     // ── Build message history (inside semaphore to avoid dirty-history races) ─
     historyService.pushUser(message.author.id, userText);
@@ -220,6 +215,11 @@ export async function onRemoteMessage(message, remoteClient, localClient) {
     const done = logger.timer(`[${reqId}] full response`, "info");
     let fullResponse;
     try {
+      await message.channel.sendTyping();
+      typingInterval = setInterval(
+        () => message.channel.sendTyping().catch(() => {}),
+        8_000
+      );
       fullResponse = await routeRemoteRequest(
         reqId,
         message,
@@ -309,19 +309,13 @@ export async function onLocalMessage(message, localClient, remoteClient) {
     `[${reqId}] [local] historyUserId=${historyUserId} in #${message.channel.name ?? message.channelId}: ${userText.slice(0, 80)}`
   );
 
-  // ── Typing indicator ────────────────────────────────────────────────────────
-  await message.channel.sendTyping();
-  const typingInterval = setInterval(
-    () => message.channel.sendTyping().catch(() => {}),
-    8_000
-  );
-
   // ── Acquire global concurrency slot ────────────────────────────────────────
   await semaphore.acquire();
 
   // Set presence to Online immediately — we're starting to process
   setLocalPresenceOnline();
 
+  let typingInterval;
   try {
     // Ensure the local model is loaded
     await ensureLocalModel();
@@ -340,6 +334,11 @@ export async function onLocalMessage(message, localClient, remoteClient) {
     logger.debug(`[${reqId}] local model messages: ${messages.length} (${Math.floor((messages.length - 1) / 2)} user/assistant pairs)`);
 
     logger.raw("→ local input", messages);
+    await message.channel.sendTyping();
+    typingInterval = setInterval(
+      () => message.channel.sendTyping().catch(() => {}),
+      8_000
+    );
     const rawResponse = stripThinkBlock(
       await llamaWithTools(config.llama.localUrl, messages, modelOpts("local"))
     );
@@ -421,15 +420,10 @@ export async function onLocalDirectMessage(message, localClient) {
     `[${reqId}] [local-direct] [${message.author.tag}] in #${message.channel.name ?? message.channelId}: ${userText.slice(0, 80)}`
   );
 
-  await message.channel.sendTyping();
-  const typingInterval = setInterval(
-    () => message.channel.sendTyping().catch(() => {}),
-    8_000
-  );
-
   await semaphore.acquire();
   setLocalPresenceOnline();
 
+  let typingInterval;
   try {
     await ensureLocalModel();
 
@@ -446,6 +440,11 @@ export async function onLocalDirectMessage(message, localClient) {
     );
 
     logger.raw("→ local direct input", messages);
+    await message.channel.sendTyping();
+    typingInterval = setInterval(
+      () => message.channel.sendTyping().catch(() => {}),
+      8_000
+    );
     const rawResponse = stripThinkBlock(
       await llamaWithTools(config.llama.localUrl, messages, modelOpts("local"))
     );
