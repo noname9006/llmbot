@@ -43,6 +43,11 @@ logger.debug(`Rate limit: ${config.rateLimit.maxRequests} req / ${config.rateLim
 logger.debug(`History: max ${config.history.maxPairs} pairs`);
 logger.debug(`Complexity: prompt length threshold=${config.complexity.promptLength}`);
 
+// Initialize MCP first so the remote backend's warm-up (which pre-warms the
+// n_keep cache) sees the loaded MCP tools + context block. Otherwise the
+// pre-warmed cache keys would not match real requests once MCP is enabled.
+await initMcp();
+
 // Initialize remote backend — starts VPS llama-server immediately unless
 // OPENROUTER_REMOTE_PRIORITY=openrouter, in which case OR is checked first and
 // VPS only starts if OR is unreachable. A periodic monitor keeps the two in sync.
@@ -52,7 +57,6 @@ try {
   logger.error("Failed to initialize remote backend:", err);
   process.exit(1);
 }
-await initMcp();
 
 // Login — remote bot is required; local bot is optional
 remoteClient.login(config.discord.tokenRemote).catch((err) => {
