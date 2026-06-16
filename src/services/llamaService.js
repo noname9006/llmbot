@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 import { withRetry } from "../utils/retry.js";
@@ -13,8 +14,12 @@ const nKeepCache = new Map();
  * request sent with the exact same system prompt and tools, so it reflects
  * the real token count including any server-side tool-schema injection.
  *
- * Cached per (baseUrl, date, tools.length) and invalidated when the calendar
- * date changes because `{{CURRENT_DATE}}` shifts the prompt.
+ * Cached per (baseUrl, date, system-prompt hash, tools.length). The prompt
+ * hash is required because a single baseUrl serves many distinct system
+ * prompts (e.g. one per guild via getGuildConfig); without it, one guild's
+ * measured n_keep would be wrongly reused for another guild's prompt. The
+ * date component invalidates daily because `{{CURRENT_DATE}}` shifts the
+ * prompt.
  *
  * @param {string} baseUrl
  * @param {{role: string, content: string}} systemMessage
@@ -23,7 +28,11 @@ const nKeepCache = new Map();
  */
 async function resolveNKeep(baseUrl, systemMessage, tools) {
   const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-  const cacheKey = `${baseUrl}:${today}:${tools.length}`;
+  const promptHash = createHash("sha1")
+    .update(systemMessage.content ?? "")
+    .digest("hex")
+    .slice(0, 12);
+  const cacheKey = `${baseUrl}:${today}:${promptHash}:${tools.length}`;
 
   const cached = nKeepCache.get(cacheKey);
   if (cached !== undefined) {

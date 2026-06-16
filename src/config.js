@@ -749,3 +749,21 @@ export function getGuildConfig(guildId) {
   if (!guildId) return null;
   return _guildConfigs[guildId] ?? null;
 }
+
+/**
+ * Returns the distinct, non-null guild-specific system prompts configured for
+ * the given role across all guilds. Used to pre-warm the per-prompt n_keep
+ * cache at startup so each guild's first message skips the measurement call.
+ * Guilds without a role-specific override fall back to the global prompt at
+ * request time and so contribute nothing here.
+ * @param {'remote'|'local'} role
+ * @returns {string[]}
+ */
+export function getGuildSystemPrompts(role) {
+  const key = role === "remote" ? "systemPromptRemote" : "systemPromptLocal";
+  const prompts = new Set();
+  for (const gc of Object.values(_guildConfigs)) {
+    if (gc[key]) prompts.add(gc[key]);
+  }
+  return [...prompts];
+}

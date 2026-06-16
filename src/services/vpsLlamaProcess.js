@@ -1,9 +1,34 @@
 import { spawn, execFileSync } from "child_process";
 import fs from "fs";
-import { config } from "../config.js";
+import { config, resolveDynamicPrompt, getGuildSystemPrompts } from "../config.js";
 import { logger } from "../logger.js";
 import { setLocalModelReady } from "./agentService.js";
 import { prewarmNKeep } from "./llamaService.js";
+import { safeGetMcpContextBlock, getMcpTools } from "./mcpService.js";
+
+/**
+ * Pre-warms the n_keep cache for every distinct system prompt a role serves —
+ * the global default plus each guild-specific override — resolving each prompt
+ * with the same dynamic placeholders + MCP context block and tool set that real
+ * requests use (see historyService), so the cache keys line up and the first
+ * real message for each guild skips the measurement round-trip.
+ *
+ * Fire-and-forget: each measurement is non-fatal and runs independently.
+ *
+ * @param {string} url            base URL of the role's llama-server
+ * @param {'remote'|'local'} role
+ * @param {string} defaultPrompt  the role's global system prompt
+ */
+function prewarmRolePrompts(url, role, defaultPrompt) {
+  const tools = config.mcp.enabled ? getMcpTools() : [];
+  const mcpBlock = safeGetMcpContextBlock();
+  const prompts = new Set([defaultPrompt, ...getGuildSystemPrompts(role)]);
+  logger.debug(`[nkeep] Pre-warming ${prompts.size} ${role} prompt(s) (tools=${tools.length})`);
+  for (const prompt of prompts) {
+    const content = resolveDynamicPrompt(prompt, mcpBlock);
+    prewarmNKeep(url, { role: "system", content }, tools).catch(() => {});
+  }
+}
 
 /** @type {import("child_process").ChildProcess | null} */
 let vpsProcess = null;
@@ -239,9 +264,8 @@ export async function warmupRemoteModel() {
 
     if (res.ok) {
       logger.info("[remoteLlama] Model warm-up complete");
-      // Pre-warm n_keep cache for the remote model
-      prewarmNKeep(url, { role: "system", content: config.llm.systemPromptRemote }, [])
-        .catch(() => {});
+      // Pre-warm n_keep cache for the remote model — global + per-guild prompts
+      prewarmRolePrompts(url, "remote", config.llm.systemPromptRemote);
     } else {
       const text = await res.text().catch(() => "(unreadable)");
       logger.warn(`[remoteLlama] Warm-up request returned non-OK status ${res.status}: ${text}`);
@@ -298,9 +322,8 @@ export async function warmupLocalModel() {
     if (res.ok) {
       setLocalModelReady(true);
       logger.info("[localLlama] Model ready for inference");
-      // Pre-warm n_keep cache for the local model
-      prewarmNKeep(url, { role: "system", content: config.llm.systemPromptLocal }, [])
-        .catch(() => {});
+      // Pre-warm n_keep cache for the local model — global + per-guild prompts
+      prewarmRolePrompts(url, "local", config.llm.systemPromptLocal);
     } else {
       const text = await res.text().catch(() => "(unreadable)");
       logger.warn(`[localLlama] Local warm-up request returned non-OK status ${res.status}: ${text}`);
