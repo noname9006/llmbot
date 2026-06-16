@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { config, resolveDynamicPrompt } from "../config.js";
+import { config, resolveDynamicPrompt, getGuildConfig } from "../config.js";
 import { logger } from "../logger.js";
 import { historyService } from "../services/historyService.js";
 import { llamaChat } from "../services/llamaService.js";
@@ -58,6 +58,19 @@ const MSG_SEARCH_RECURSION =
   "I tried to look that up but wasn't able to find a satisfactory result.";
 const MSG_GREETING_FALLBACK = "Sup 👀";
 
+/**
+ * Returns the guild-specific system prompt for the given role, or null to use
+ * the global default from config.
+ * @param {string | null | undefined} guildId
+ * @param {'remote'|'local'} role
+ * @returns {string | null}
+ */
+function resolveGuildPrompt(guildId, role) {
+  const gc = getGuildConfig(guildId);
+  if (!gc) return null;
+  return role === "remote" ? gc.systemPromptRemote : gc.systemPromptLocal;
+}
+
 // Per-user rate limiter
 const rateLimiter = createRateLimiter({
   maxRequests: config.rateLimit.maxRequests,
@@ -103,13 +116,10 @@ export async function onRemoteMessage(message, remoteClient, localClient) {
   // Ignore bots (including self)
   if (message.author.bot) return;
 
-  // Channel allowlist check
-  if (
-    config.discord.allowedChannelIds.length > 0 &&
-    !config.discord.allowedChannelIds.includes(message.channelId)
-  ) {
-    return;
-  }
+  // Channel allowlist check (per-guild if configured, otherwise global)
+  const _guildCfgRemote = getGuildConfig(message.guildId);
+  const _allowedRemote = _guildCfgRemote?.allowedChannelIds ?? config.discord.allowedChannelIds;
+  if (_allowedRemote.length > 0 && !_allowedRemote.includes(message.channelId)) return;
 
   // ── Commands (no mention required) ─────────────────────────────────────────
   if (isCommand(message.content)) {
@@ -141,7 +151,10 @@ export async function onRemoteMessage(message, remoteClient, localClient) {
       const greetMessages = [
         {
           role: "system",
-          content: resolveDynamicPrompt(config.llm.systemPromptRemote, safeGetMcpContextBlock()),
+          content: resolveDynamicPrompt(
+            resolveGuildPrompt(message.guildId, "remote") ?? config.llm.systemPromptRemote,
+            safeGetMcpContextBlock()
+          ),
         },
         {
           role: "user",
@@ -189,7 +202,7 @@ export async function onRemoteMessage(message, remoteClient, localClient) {
     historyService.pushUser(message.author.id, userText);
     const messages = historyService.getMessages(
       message.author.id,
-      config.llm.systemPromptRemote,
+      resolveGuildPrompt(message.guildId, "remote") ?? config.llm.systemPromptRemote,
       config.history.maxInputTokensRemote
     );
 
@@ -309,7 +322,7 @@ export async function onLocalMessage(message, localClient, remoteClient) {
     // We retrieve the existing history and run inference on it.
     const messages = historyService.getMessages(
       historyUserId,
-      config.llm.systemPromptLocal,
+      resolveGuildPrompt(message.guildId, "local") ?? config.llm.systemPromptLocal,
       config.history.maxInputTokensLocal
     );
 
@@ -380,13 +393,10 @@ export async function onLocalMessage(message, localClient, remoteClient) {
  * @param {import("discord.js").Client} localClient
  */
 export async function onLocalDirectMessage(message, localClient) {
-  // Channel allowlist
-  if (
-    config.discord.allowedChannelIds.length > 0 &&
-    !config.discord.allowedChannelIds.includes(message.channelId)
-  ) {
-    return;
-  }
+  // Channel allowlist (per-guild if configured, otherwise global)
+  const _guildCfgLocal = getGuildConfig(message.guildId);
+  const _allowedLocal = _guildCfgLocal?.allowedChannelIds ?? config.discord.allowedChannelIds;
+  if (_allowedLocal.length > 0 && !_allowedLocal.includes(message.channelId)) return;
 
   // Rate limit
   if (!rateLimiter.check(message.author.id)) {
@@ -415,7 +425,7 @@ export async function onLocalDirectMessage(message, localClient) {
     historyService.pushUser(historyUserId, userText);
     const messages = historyService.getMessages(
       historyUserId,
-      config.llm.systemPromptLocal,
+      resolveGuildPrompt(message.guildId, "local") ?? config.llm.systemPromptLocal,
       config.history.maxInputTokensLocal
     );
 

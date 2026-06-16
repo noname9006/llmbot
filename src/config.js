@@ -153,6 +153,34 @@ const _ctxFallback = optional("LLAMA_CONTEXT_SIZE", "0");
 
 const _timeoutFallback = parseInt(optional("LLM_FETCH_TIMEOUT_MS", "120000"), 10);
 
+// ── Parallel slots + slot-size derivation ─────────────────────────────────────
+
+const _parallelRemote = Math.max(1, parseInt(optional("LLAMA_PARALLEL_REMOTE", "1"), 10) || 1);
+const _parallelLocal  = Math.max(1, parseInt(optional("LLAMA_PARALLEL_LOCAL",  "1"), 10) || 1);
+
+// Pre-compute context sizes so slot derivation can reference them.
+const _ctxSizeRemote = parseInt(optional("LLAMA_CONTEXT_SIZE_REMOTE",
+  optional("LLAMA_CONTEXT_SIZE_VPS", _ctxFallback)
+), 10) || 0;
+const _ctxSizeLocal = parseInt(optional("LLAMA_CONTEXT_SIZE_LOCAL",
+  optional("LLAMA_CONTEXT_SIZE_COMMON", _ctxFallback)
+), 10) || 0;
+
+// Per-slot budget = contextSize / parallel.
+// LLAMA_CONTEXT_SLOT_SIZE_* overrides when the auto-derived value is wrong
+// (e.g. the server was started with a different parallel count externally).
+function _deriveSlotSize(ctxSize, parallel, overrideEnvKey) {
+  const override = optional(overrideEnvKey, "");
+  if (override) {
+    const v = parseInt(override, 10);
+    if (v > 0) return v;
+  }
+  return ctxSize > 0 ? Math.floor(ctxSize / parallel) : 0;
+}
+
+const _ctxSlotSizeRemote = _deriveSlotSize(_ctxSizeRemote, _parallelRemote, "LLAMA_CONTEXT_SLOT_SIZE_REMOTE");
+const _ctxSlotSizeLocal  = _deriveSlotSize(_ctxSizeLocal,  _parallelLocal,  "LLAMA_CONTEXT_SLOT_SIZE_LOCAL");
+
 // Global inference parameter defaults (read once; per-model values fall back here)
 const _llamaGlobals = {
   temperature:   parseFloat(optional("LLM_TEMPERATURE",        "0.8")),
@@ -498,31 +526,19 @@ export const config = {
       optional("LLAMA_EXTRA_ARGS_COMMON", _extraArgsFallback)
     ),
 
-    // ── Per-model context size (passed to agent /start) ───────────────────────
-    // Falls back to LLAMA_CONTEXT_SIZE if the role-specific var is not set.
-    contextSizeRemote: parseInt(optional("LLAMA_CONTEXT_SIZE_REMOTE",
-      optional("LLAMA_CONTEXT_SIZE_VPS", _ctxFallback)
-    ), 10) || 0,
-    contextSizeLocal:  parseInt(
-      optional("LLAMA_CONTEXT_SIZE_LOCAL",
-        // Backward compat: fall back to the old COMMON var
-        optional("LLAMA_CONTEXT_SIZE_COMMON", _ctxFallback)
-      ),
-      10
-    ) || 0,
+    // ── Per-model context size (passed as -c to llama-server) ────────────────
+    contextSizeRemote: _ctxSizeRemote,
+    contextSizeLocal:  _ctxSizeLocal,
 
-    // Per-slot context size used for trim budgeting.
-    // When llama-server runs with --parallel N, the total context is split
-    // across N slots.  Set these to (LLAMA_CONTEXT_SIZE_x / N) so the
-    // context trimmer knows the real per-request limit.
-    // Defaults to the total context size when not set (safe but may allow
-    // prompts that exceed the actual slot capacity when parallel > 1).
-    contextSlotSizeRemote: parseInt(optional("LLAMA_CONTEXT_SLOT_SIZE_REMOTE",
-      optional("LLAMA_CONTEXT_SIZE_REMOTE", optional("LLAMA_CONTEXT_SIZE_VPS", _ctxFallback))
-    ), 10) || 0,
-    contextSlotSizeLocal: parseInt(optional("LLAMA_CONTEXT_SLOT_SIZE_LOCAL",
-      optional("LLAMA_CONTEXT_SIZE_LOCAL", optional("LLAMA_CONTEXT_SIZE_COMMON", _ctxFallback))
-    ), 10) || 0,
+    // ── Parallel slots (--parallel N passed to llama-server) ─────────────────
+    parallelRemote: _parallelRemote,
+    parallelLocal:  _parallelLocal,
+
+    // ── Per-slot context budget for trim ──────────────────────────────────────
+    // Auto-derived as floor(contextSize / parallel). Override with
+    // LLAMA_CONTEXT_SLOT_SIZE_* only when the auto value is wrong.
+    contextSlotSizeRemote: _ctxSlotSizeRemote,
+    contextSlotSizeLocal:  _ctxSlotSizeLocal,
 
     // ── Per-model fetch timeouts ───────────────────────────────────────────────
     // Falls back to LLM_FETCH_TIMEOUT_MS if the role-specific var is not set.
@@ -592,6 +608,17 @@ export const config = {
       10
     ),
   },
+  remoteAvailability: {
+    // Set to false to disable OR-managed VPS and always start VPS on startup (legacy behaviour).
+    enabled: optional("REMOTE_OR_MONITOR_ENABLED", "true") === "true",
+    // How often (ms) to re-check OpenRouter when OPENROUTER_REMOTE_PRIORITY=openrouter.
+    // On recovery: stops VPS llama-server and resets circuit breakers so OR is used immediately.
+    // On loss: starts VPS llama-server as fallback. 0 = monitoring disabled.
+    monitorIntervalMs: parseInt(
+      optional("REMOTE_OR_MONITOR_INTERVAL_MS", String(30 * 60 * 1000)),
+      10
+    ),
+  },
   complexity: {
     // Minimum character count of a user prompt to be considered "long"
     promptLength: parseInt(optional("COMPLEXITY_PROMPT_LENGTH", "300"), 10),
@@ -616,6 +643,9 @@ export const config = {
     // How long (ms) the local bot stays Online after finishing a task before
     // returning to Idle.  0 = return to Idle immediately.
     cooldownMs: parseInt(optional("LOCAL_PRESENCE_COOLDOWN_MS", "30000"), 10),
+    // How often (ms) to re-assert the intended presence status, guarding against
+    // Discord gateway reconnects silently resetting it to Online.  0 = disabled.
+    heartbeatMs: parseInt(optional("LOCAL_PRESENCE_HEARTBEAT_MS", "300000"), 10),
     // How long (ms) the local model may be idle before being stopped.
     // 0 = never auto-stop (default).
     idleMs: parseInt(optional("LOCAL_MODEL_IDLE_MS", "0"), 10),
@@ -676,3 +706,46 @@ export const config = {
   logLevel: optional("LOG_LEVEL", "info"),
   logRaw:   optional("LOG_RAW",   "false") === "true",
 };
+
+// ── Per-guild settings ────────────────────────────────────────────────────────
+
+function loadGuildConfigs() {
+  const result = {};
+  for (let n = 1; n <= 10; n++) {
+    const guildId = optional(`GUILD_ID_${n}`, "");
+    if (!guildId) continue;
+
+    let systemPromptRemote = null;
+    try {
+      const p = new URL(`../sysprompt_remote_${n}.txt`, import.meta.url);
+      systemPromptRemote = buildSystemPrompt(fs.readFileSync(p, "utf-8").trim());
+    } catch { /* no file for this slot — fall back to global */ }
+
+    let systemPromptLocal = null;
+    try {
+      const p = new URL(`../sysprompt_local_${n}.txt`, import.meta.url);
+      systemPromptLocal = buildSystemPrompt(fs.readFileSync(p, "utf-8").trim());
+    } catch { /* no file for this slot — fall back to global */ }
+
+    const channels = optional(`GUILD_CHANNELS_${n}`, "");
+    result[guildId] = {
+      allowedChannelIds: channels ? channels.split(",").map(s => s.trim()).filter(Boolean) : [],
+      systemPromptRemote,
+      systemPromptLocal,
+    };
+  }
+  return result;
+}
+
+const _guildConfigs = loadGuildConfigs();
+
+/**
+ * Returns per-guild settings for the given guild ID, or null if no entry exists.
+ * Null fields within the returned object mean "fall back to global config".
+ * @param {string | null | undefined} guildId
+ * @returns {{ allowedChannelIds: string[], systemPromptRemote: string|null, systemPromptLocal: string|null } | null}
+ */
+export function getGuildConfig(guildId) {
+  if (!guildId) return null;
+  return _guildConfigs[guildId] ?? null;
+}

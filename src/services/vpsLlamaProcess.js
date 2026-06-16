@@ -100,6 +100,7 @@ export async function startVpsLlamaServer() {
   const modelPath = config.vpsLlama.modelPath;
   const port = extractPort(config.llama.remoteUrl);
   const contextSize = config.llama.contextSizeRemote;
+  const parallel = config.llama.parallelRemote;
   const extraArgs = config.llama.extraArgsRemote;
 
   if (!modelPath) {
@@ -118,6 +119,10 @@ export async function startVpsLlamaServer() {
 
   if (contextSize > 0) {
     args.push("-c", String(contextSize));
+  }
+
+  if (parallel > 1) {
+    args.push("--parallel", String(parallel));
   }
 
   if (extraArgs) {
@@ -303,6 +308,14 @@ export async function warmupLocalModel() {
   } catch (err) {
     logger.warn(`[localLlama] Local warm-up request failed (non-fatal): ${err.message}`);
   }
+}
+
+/**
+ * Returns true when the VPS llama-server process is currently running.
+ * @returns {boolean}
+ */
+export function isVpsServerRunning() {
+  return vpsProcess !== null;
 }
 
 /**

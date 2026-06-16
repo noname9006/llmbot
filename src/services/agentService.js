@@ -152,6 +152,7 @@ export async function ensureLocalModel() {
       role: "local",
       extraArgs: config.llama.extraArgsLocal,
       contextSize: config.llama.contextSizeLocal,
+      parallel: config.llama.parallelLocal,
     })
       .then(() => {
         if (generation === gen) {
@@ -228,7 +229,7 @@ export function clearLocalIdleTimer() {
  * @param {string} [options.extraArgs]    - extra CLI args forwarded to llama-server
  * @param {number} [options.contextSize]  - context size override (0 = server default)
  */
-async function agentStart(modelFile, { role = "", extraArgs = "", contextSize = 0 } = {}) {
+async function agentStart(modelFile, { role = "", extraArgs = "", contextSize = 0, parallel = 1 } = {}) {
   const { agentUrl, agentToken } = config.llama;
   if (!agentUrl) {
     throw new Error("LOCAL_AGENT_URL is not configured");
@@ -248,6 +249,7 @@ async function agentStart(modelFile, { role = "", extraArgs = "", contextSize = 
   if (role) body.role = role;
   if (extraArgs) body.extraArgs = extraArgs;
   if (contextSize > 0) body.contextSize = contextSize;
+  if (parallel > 1) body.parallel = parallel;
 
   try {
     const res = await fetch(`${agentUrl}/start`, {

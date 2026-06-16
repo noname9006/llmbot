@@ -22,6 +22,8 @@ const LLAMA_CONTEXT_SIZE = process.env.LLAMA_CONTEXT_SIZE ?? "";
 const LLAMA_CONTEXT_SIZE_LOCAL  = process.env.LLAMA_CONTEXT_SIZE_LOCAL  ?? process.env.LLAMA_CONTEXT_SIZE_COMMON ?? "";
 const LLAMA_CONTEXT_SIZE_COMMON = process.env.LLAMA_CONTEXT_SIZE_COMMON ?? "";
 const LLAMA_CONTEXT_SIZE_HEAVY  = process.env.LLAMA_CONTEXT_SIZE_HEAVY  ?? "";
+// Parallel slots (--parallel N). Agent-side value takes priority over bot-sent value.
+const LLAMA_PARALLEL_LOCAL = process.env.LLAMA_PARALLEL_LOCAL ?? "";
 const LLAMA_EXTRA_ARGS = process.env.LLAMA_EXTRA_ARGS ?? "";
 const LOG_LEVEL = process.env.LOG_LEVEL ?? "info";
 
@@ -96,7 +98,7 @@ const LOCAL_LLAMA_PATTERNS = [
  * @param {number} [contextSize] - context window size (0 = use model default)
  * @returns {Promise<void>}
  */
-function startServer(modelFile, role = "", extraArgs = "", contextSize = 0) {
+function startServer(modelFile, role = "", extraArgs = "", contextSize = 0, parallel = 1) {
   return new Promise((resolve, reject) => {
     const modelPath = path.join(LLAMA_MODEL_DIR, modelFile);
 
@@ -107,6 +109,9 @@ function startServer(modelFile, role = "", extraArgs = "", contextSize = 0) {
     ];
     if (contextSize > 0) {
       args.push("--ctx-size", String(contextSize));
+    }
+    if (parallel > 1) {
+      args.push("--parallel", String(parallel));
     }
     if (extraArgs) {
       args.push(...extraArgs.trim().split(/\s+/));
@@ -346,7 +351,14 @@ app.post("/start", async (req, res) => {
                     : bodyContextSize > 0 ? bodyContextSize
                     : (parseInt(LLAMA_CONTEXT_SIZE, 10) || 0);
 
-  logger.debug(`/start resolved: role="${role}" extraArgs="${extraArgs}" contextSize=${contextSize}`);
+  // Resolve parallel: agent-side env (highest priority) > bot-sent value > default 1
+  const envParallel = role === "local" ? LLAMA_PARALLEL_LOCAL : "";
+  const bodyParallel = typeof req.body?.parallel === "number" ? req.body.parallel : 0;
+  const parallel = envParallel ? (Math.max(1, parseInt(envParallel, 10) || 1))
+                 : bodyParallel > 1 ? bodyParallel
+                 : 1;
+
+  logger.debug(`/start resolved: role="${role}" extraArgs="${extraArgs}" contextSize=${contextSize} parallel=${parallel}`);
 
   // Log any inference params present in the request body
   const inferenceKeys = ["temperature", "top_p", "top_k", "min_p", "repeat_penalty", "max_tokens"];
@@ -378,7 +390,7 @@ app.post("/start", async (req, res) => {
       await stopServer();
     }
 
-    await startServer(modelFile, role, extraArgs, contextSize);
+    await startServer(modelFile, role, extraArgs, contextSize, parallel);
     await warmupModel(LLAMA_SERVER_PORT, { logger });
     res.json({ status: "ok", model: modelFile, port: LLAMA_SERVER_PORT });
 
@@ -425,6 +437,7 @@ app.listen(PORT, () => {
   logger.debug(`Extra args (heavy):  ${LLAMA_EXTRA_ARGS_HEAVY  || "(none)"} (legacy)`);
   logger.debug(`Context size (local):  ${LLAMA_CONTEXT_SIZE_LOCAL  || "(default)"}`);
   logger.debug(`Context size (common): ${LLAMA_CONTEXT_SIZE_COMMON || "(default)"} (legacy)`);
+  logger.debug(`Parallel slots (local): ${LLAMA_PARALLEL_LOCAL || "(bot-sent or default=1)"}`);
   logger.debug(`Context size (heavy):  ${LLAMA_CONTEXT_SIZE_HEAVY  || "(default)"} (legacy)`);
 });
 

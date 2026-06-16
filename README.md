@@ -23,6 +23,7 @@ A Discord bot powered by **llama-server** (llama.cpp) with a two-bot / two-role 
 - [Environment Variables](#environment-variables)
 - [Gemma 4 Notes](#gemma-4-notes)
 - [OpenRouter](#openrouter)
+  - [OR-managed VPS (remote role)](#or-managed-vps-remote-role)
 - [Search Flow](#search-flow)
 - [MCP (Model Context Protocol)](#mcp-model-context-protocol)
 - [Agent Setup](#agent-setup)
@@ -499,8 +500,12 @@ Optional. Lets either role run inference on [OpenRouter](https://openrouter.ai) 
 | `LLAMA_EXTRA_ARGS_REMOTE` | falls back to `LLAMA_EXTRA_ARGS` | Extra args for remote role |
 | `LLAMA_EXTRA_ARGS_LOCAL` | falls back to `LLAMA_EXTRA_ARGS` | Extra args for local role |
 | `LLAMA_CONTEXT_SIZE` | `0` | Global fallback context size (`0` = model default) |
-| `LLAMA_CONTEXT_SIZE_REMOTE` | falls back to `LLAMA_CONTEXT_SIZE` | Context size for remote role (must match `llama-server -c`; also drives per-round tool-call trimming) |
-| `LLAMA_CONTEXT_SIZE_LOCAL` | falls back to `LLAMA_CONTEXT_SIZE` | Context size for local role |
+| `LLAMA_CONTEXT_SIZE_REMOTE` | falls back to `LLAMA_CONTEXT_SIZE` | Total KV cache passed as `-c` to the remote llama-server |
+| `LLAMA_CONTEXT_SIZE_LOCAL` | falls back to `LLAMA_CONTEXT_SIZE` | Total KV cache passed as `-c` to the local llama-server |
+| `LLAMA_PARALLEL_REMOTE` | `1` | Number of parallel inference slots (`--parallel N`) for the remote llama-server |
+| `LLAMA_PARALLEL_LOCAL` | `1` | Number of parallel inference slots for the local llama-server (also settable in `agent/.env`) |
+| `LLAMA_CONTEXT_SLOT_SIZE_REMOTE` | auto: `LLAMA_CONTEXT_SIZE_REMOTE / LLAMA_PARALLEL_REMOTE` | Per-slot context budget for tool-round trimming. Override only when the auto value is wrong (e.g. externally managed server with a different parallel count). |
+| `LLAMA_CONTEXT_SLOT_SIZE_LOCAL` | auto: `LLAMA_CONTEXT_SIZE_LOCAL / LLAMA_PARALLEL_LOCAL` | Same for local role |
 | `CONTEXT_TRIM_SAFETY_MARGIN` | `512` | Extra token reserve subtracted from `n_ctx` before each tool-calling LLM round |
 | `CONTEXT_TRIM_MIN_MESSAGE_BUDGET` | `512` | Floor for the computed messages budget after reserves |
 | `LLM_FETCH_TIMEOUT_MS` | `120000` | Global fallback timeout for `/chat/completions` |
@@ -531,8 +536,11 @@ Examples: `LLM_TEMPERATURE_REMOTE`, `LLM_TEMPERATURE_LOCAL`, `LLM_REASONING_BUDG
 | `HEALTH_TOKEN` | *(empty)* | Optional bearer token to protect `/health` |
 | `LOG_LEVEL` | `info` | Log verbosity (`debug` / `info` / `warn` / `error`) |
 | `LOG_RAW` | `false` | Log raw LLM input/output payloads |
-| `LOCAL_PRESENCE_COOLDOWN_MS` | `30000` | Local bot online→idle cooldown |
+| `LOCAL_PRESENCE_COOLDOWN_MS` | `30000` | Local bot online→idle cooldown after finishing a task |
+| `LOCAL_PRESENCE_HEARTBEAT_MS` | `300000` | How often (ms) to re-assert local bot presence to Discord; guards against gateway reconnects silently resetting it to Online. `0` = disabled |
 | `LOCAL_MODEL_IDLE_MS` | `0` | Idle timeout before stopping local model (`0` = never) |
+| `REMOTE_OR_MONITOR_ENABLED` | `true` | Enable OR-managed VPS for the remote role (only active when `OPENROUTER_REMOTE_PRIORITY=openrouter`) |
+| `REMOTE_OR_MONITOR_INTERVAL_MS` | `1800000` | How often (ms) to re-check OR availability in managed-VPS mode |
 
 ### MCP (Model Context Protocol)
 
@@ -621,7 +629,8 @@ How selection works per role:
 - A role is OpenRouter-eligible only when its `*_ENABLED` flag is `true` **and** `OPENROUTER_API_KEY` is set.
 - `*_PRIORITY` decides which backend is tried first (`llama` or `openrouter`).
 - If the preferred backend's request fails (missing key, network error, 5xx), the request **automatically falls back** to the other backend. With `PRIORITY=llama` (default), OpenRouter acts purely as a backup; with `PRIORITY=openrouter`, the llama-server is the backup.
-- The self-hosted llama-server still starts and warms up as usual, so a fallback target is always available. Set per-role `*_CONTEXT_SIZE` so tool-round context trimming matches the OpenRouter model's window.
+- By default (`PRIORITY=llama`), the VPS llama-server starts and warms up at startup so a fallback target is always available. With `PRIORITY=openrouter` and `REMOTE_OR_MONITOR_ENABLED=true` (default), the VPS is managed dynamically — see [OR-managed VPS](#or-managed-vps-remote-role) below.
+- Set per-role `*_CONTEXT_SIZE` so tool-round context trimming matches the OpenRouter model's window.
 
 > Only the OpenAI-safe inference params (`temperature`, `top_p`, `top_k`, `max_tokens`) are sent to OpenRouter. llama.cpp-specific options (`min_p`, `repeat_penalty`, `n_keep`, reasoning budget) apply to the llama-server backend only.
 
@@ -648,6 +657,22 @@ OpenRouter calls are retried independently from the global retry settings:
 | `2` | Any direction: remote OR fails → try local OR, and vice versa → then llama |
 
 When a cross-role OR fallback is used, the system prompt automatically switches to the fallback role's persona so the model behaves consistently.
+
+### OR-managed VPS (remote role)
+
+When `OPENROUTER_REMOTE_PRIORITY=openrouter` and `REMOTE_OR_MONITOR_ENABLED=true` (the default), the VPS llama-server lifecycle is managed automatically based on OpenRouter availability:
+
+- **Startup** — OpenRouter is checked first. If it responds, VPS llama-server is not started (saves memory/CPU). If OR is unreachable, VPS starts immediately as a fallback.
+- **Monitor** — A periodic health check runs every `REMOTE_OR_MONITOR_INTERVAL_MS` (default 30 min):
+  - OR goes down → VPS llama-server starts automatically.
+  - OR comes back → VPS llama-server stops, and all circuit breakers are reset so the next request uses OR immediately.
+
+Set `REMOTE_OR_MONITOR_ENABLED=false` to revert to the previous behavior: VPS always starts on boot regardless of OR state.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `REMOTE_OR_MONITOR_ENABLED` | `true` | Enable OR-managed VPS for the remote role (only active when `OPENROUTER_REMOTE_PRIORITY=openrouter`) |
+| `REMOTE_OR_MONITOR_INTERVAL_MS` | `1800000` | How often (ms) to re-check OpenRouter availability (default 30 min) |
 
 ### Local bot presence with OpenRouter
 

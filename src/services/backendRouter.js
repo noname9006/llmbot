@@ -21,6 +21,18 @@ function isCircuitOpen(ep) {
   return false;
 }
 
+/**
+ * Resets all open circuit breakers. Call when an external health check confirms
+ * that a previously-unreachable provider is back online, so requests are retried
+ * immediately instead of waiting for the 60-min window to expire.
+ */
+export function resetAllCircuits() {
+  if (_circuitOpenUntil.size > 0) {
+    _circuitOpenUntil.clear();
+    logger.info("[backend] all circuit breakers reset");
+  }
+}
+
 function tripCircuit(ep) {
   const key = circuitKey(ep);
   const resetAt = new Date(Date.now() + CIRCUIT_OPEN_MS).toISOString();

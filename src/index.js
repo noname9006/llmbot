@@ -3,7 +3,8 @@ import { logger } from "./logger.js";
 import { remoteClient, localClient } from "./bot.js";
 import { getSemaphoreStats } from "./handlers/messageHandler.js";
 import { clearLocalIdleTimer } from "./services/agentService.js";
-import { startVpsLlamaServer, stopVpsLlamaServer, warmupRemoteModel } from "./services/vpsLlamaProcess.js";
+import { stopVpsLlamaServer } from "./services/vpsLlamaProcess.js";
+import { initRemoteBackend, stopOrRemoteMonitor } from "./services/remoteAvailabilityService.js";
 import { initMcp, shutdownMcp } from "./services/mcpService.js";
 
 // Deprecation warning for legacy DISCORD_TOKEN env var
@@ -42,16 +43,15 @@ logger.debug(`Rate limit: ${config.rateLimit.maxRequests} req / ${config.rateLim
 logger.debug(`History: max ${config.history.maxPairs} pairs`);
 logger.debug(`Complexity: prompt length threshold=${config.complexity.promptLength}`);
 
-// Start remote llama-server before connecting to Discord
+// Initialize remote backend — starts VPS llama-server immediately unless
+// OPENROUTER_REMOTE_PRIORITY=openrouter, in which case OR is checked first and
+// VPS only starts if OR is unreachable. A periodic monitor keeps the two in sync.
 try {
-  await startVpsLlamaServer();
+  await initRemoteBackend();
 } catch (err) {
-  logger.error("Failed to start remote llama-server:", err);
+  logger.error("Failed to initialize remote backend:", err);
   process.exit(1);
 }
-
-// Warm up the remote model so the first user message isn't delayed by a cold start
-await warmupRemoteModel();
 await initMcp();
 
 // Login — remote bot is required; local bot is optional
@@ -95,6 +95,7 @@ async function shutdown(signal) {
   // after the process has started tearing down.
   clearLocalIdleTimer();
 
+  stopOrRemoteMonitor();
   await stopVpsLlamaServer();
   await shutdownMcp();
 
